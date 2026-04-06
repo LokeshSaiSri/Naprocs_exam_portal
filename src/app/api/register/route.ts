@@ -1,5 +1,3 @@
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
 import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/mongodb";
 import Candidate from "@/models/Candidate";
@@ -72,18 +70,10 @@ export async function POST(req: Request) {
 
        const bytes = await resumeFile.arrayBuffer();
        const buffer = Buffer.from(bytes);
-
-       // Unique Filename: resume_ROLLNUMBER_TIMESTAMP.pdf
-       const filename = `resume_${collegeRollNumber.replace(/\//g, '_')}_${Date.now()}.pdf`;
-       const uploadDir = path.join(process.cwd(), "public", "uploads");
        
-       // Ensure directory exists (extra safety)
-       await mkdir(uploadDir, { recursive: true });
-       
-       const filePath = path.join(uploadDir, filename);
-       await writeFile(filePath, buffer);
-       
-       resumeUrl = `/uploads/${filename}`;
+       // Encode to Base64 Data URI for MongoDB persistence (Serverless safe)
+       const base64Resume = buffer.toString('base64');
+       resumeUrl = `data:application/pdf;base64,${base64Resume}`;
     }
 
     // Create Candidate
