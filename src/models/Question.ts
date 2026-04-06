@@ -4,6 +4,7 @@ export interface ITestCase {
   input: string;
   expectedOutput: string;
   isHidden: boolean;
+  weight: number;
 }
 
 export interface IQuestion extends Document {
@@ -13,6 +14,11 @@ export interface IQuestion extends Document {
   options?: string[];
   correctAnswer?: string;
   boilerplateCode?: string;
+  /** 
+   * Array of verification test cases. 
+   * Input should be a string: Use comma-separate for simple args (e.g. "3, 5")
+   * OR use JSON for complex structures (e.g. "[1, 2, 3]").
+   */
   testCases?: ITestCase[];
   driveId: mongoose.Types.ObjectId;
 }
@@ -21,6 +27,7 @@ const TestCaseSchema = new Schema<ITestCase>({
   input: { type: String, required: true },
   expectedOutput: { type: String, required: true },
   isHidden: { type: Boolean, default: false },
+  weight: { type: Number, default: 1 },
 });
 
 const QuestionSchema = new Schema<IQuestion>(

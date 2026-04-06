@@ -500,13 +500,23 @@ export default function DriveKanbanBoard() {
                                              </div>
                                           ) : (
                                              <div className="space-y-2">
-                                                <div className="p-3 rounded bg-black/40 text-[10px] font-mono text-foreground/80 overflow-hidden truncate">
-                                                   {r.candidateAnswer}
-                                                </div>
-                                                <div className="flex justify-between items-center text-[10px]">
-                                                   <span className="text-muted-foreground uppercase tracking-widest font-bold">Evaluated Score:</span>
-                                                   <span className="font-bold text-emerald-500">{r.codingMetadata.testsPassed}/{r.codingMetadata.totalTests} TESTS</span>
-                                                </div>
+                                              <div className="space-y-4">
+                                                 <div className="relative group">
+                                                    <div className="absolute top-3 right-3 text-[8px] font-bold text-muted-foreground uppercase opacity-50">Source Implementation</div>
+                                                    <pre className="p-5 rounded-2xl bg-black/60 border border-border/40 text-[12px] font-mono text-emerald-500/90 overflow-x-auto max-h-[400px] custom-scrollbar italic leading-relaxed">
+                                                       {r.candidateAnswer}
+                                                    </pre>
+                                                 </div>
+                                                 <div className="flex justify-between items-center bg-card/40 border border-border/20 p-4 rounded-xl shadow-inner">
+                                                    <div className="space-y-1">
+                                                       <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Verification Protocol Outcomes</span>
+                                                       <p className="text-sm font-bold text-emerald-500">{r.codingMetadata.testsPassed} / {r.codingMetadata.totalTests} Logic Guards Satisfied</p>
+                                                    </div>
+                                                    <div className="h-12 w-12 rounded-full border-4 border-emerald-500/20 border-t-emerald-500 flex items-center justify-center text-xs font-bold text-emerald-500">
+                                                       {Math.round((r.codingMetadata.testsPassed / r.codingMetadata.totalTests) * 100)}%
+                                                    </div>
+                                                 </div>
+                                              </div>
                                              </div>
                                           )}
                                        </div>

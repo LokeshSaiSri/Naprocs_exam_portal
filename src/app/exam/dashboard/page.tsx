@@ -50,6 +50,8 @@ export default function ExamDashboard() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isTerminated, setIsTerminated] = useState(false);
+  const [testResults, setTestResults] = useState<any[] | null>(null);
+  const [runningTests, setRunningTests] = useState(false);
   const [finalCandidateData, setFinalCandidateData] = useState<{name: string, roll: string} | null>(null);
 
   // Derive stage-specific questions
@@ -145,37 +147,106 @@ export default function ExamDashboard() {
     return `${m}:${s}`;
   };
 
-  /**
-   * Safe Web Worker Evaluation with Kill-Switch
+  /** 
+   * HackerRank-Style Secure Evaluation Generator
+   * Wraps student code in an isolated functional test runner
    */
-  const evaluateCodingQuestion = (code: string, testCases: any[]): Promise<any> => {
-    return new Promise((resolve, reject) => {
-      const worker = new Worker("/worker.js");
-      
-      const timeoutId = setTimeout(() => {
-        worker.terminate();
-        resolve({ passed: false, error: "Time Limit Exceeded (Infinite Loop Detected)" });
-      }, 5000);
+  const generateWrappedCode = (studentCode: string, testCases: any[]) => {
+    const funcMatch = studentCode.match(/function\s+([a-zA-Z0-9_$]+)/);
+    const entryPoint = funcMatch ? funcMatch[1] : null;
 
-      worker.onmessage = (e) => {
-        clearTimeout(timeoutId);
-        worker.terminate();
-        resolve(e.data); // Returns generic payload logic { testsPassed, totalTests, results }
-      };
+    return `
+      (function(global) {
+        try {
+          ${studentCode}
+          
+          global.RESULTS = [];
+          const cases = ${JSON.stringify(testCases)};
+          const entry = "${entryPoint}";
 
-      worker.onerror = (err) => {
-        clearTimeout(timeoutId);
-        worker.terminate();
-        resolve({ passed: false, error: "Runtime Syntax Fault" });
-      };
+          for (let i = 0; i < cases.length; i++) {
+             const tc = cases[i];
+             const res = { index: i, actual: null, error: null, runtime: 0, status: 3 }; 
+             const start = Date.now();
+             try {
+                if (!entry || typeof eval(entry) !== 'function') {
+                   throw new Error("Function signature has been modified. Please reset to default.");
+                }
+                
+                // Smart Input Dispatch
+                let args = [];
+                const rawInput = (tc.input || "").trim();
+                if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
+                  args = [JSON.parse(rawInput)];
+                } else {
+                  args = rawInput.split(',').map(v => {
+                     const s = v.trim();
+                     if (!isNaN(s) && s !== "" && !s.startsWith("0b") && !s.startsWith("0x")) return Number(s);
+                     if (s === 'true') return true;
+                     if (s === 'false') return false;
+                     return s;
+                  });
+                }
 
-      worker.postMessage({ code, testCases });
-    });
+                let actual = eval(entry)(...args);
+                if (actual === undefined) throw new Error("Logic returned undefined. Use return, not console.log.");
+
+                // Comparison Normalization
+                if (typeof actual === 'number' && !Number.isInteger(actual)) {
+                   actual = parseFloat(actual.toFixed(5));
+                }
+                if (Array.isArray(actual) || (actual !== null && typeof actual === 'object')) {
+                   actual = JSON.stringify(actual);
+                }
+
+                res.actual = String(actual).trim();
+             } catch(e) {
+                res.error = e.message;
+                res.status = 11; // Runtime Internal Error
+             }
+             res.runtime = Date.now() - start;
+             global.RESULTS.push(res);
+          }
+        } catch(e) {
+           throw new Error("COMPILATION_ERROR: " + e.message);
+        }
+      })(this);
+    `;
   };
 
   const handleViolationSubmit = async (reason: string) => {
      console.warn(`AUTO-SUBMIT: ${reason}`);
      await handleSubmit(true);
+  };
+
+  const runLocalTests = async () => {
+    if (!currentQ || currentQ.type !== 'CODING' || runningTests) return;
+    setRunningTests(true);
+    setTestResults(null); // Clear previous results
+
+    try {
+      const studentCode = responses[currentQ._id]?.codeStr || currentQ.boilerplateCode || "";
+      const publicCases = (currentQ.testCases || []).filter((tc: any) => !tc.isHidden);
+      
+      const wrappedCode = generateWrappedCode(studentCode, publicCases);
+      
+      const res = await fetch("/api/exam/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wrappedCode })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setTestResults(data.results);
+      } else {
+        console.error(data.message || "Evaluation Fault");
+      }
+    } catch (e) {
+       console.error("Network Latency Fault");
+    } finally {
+      setRunningTests(false);
+    }
   };
 
   const handleSubmit = async (isViolation: boolean = false, forceStage?: 'MCQ' | 'CODING') => {
@@ -189,35 +260,89 @@ export default function ExamDashboard() {
     // Use the legitimate sessionId from the sync engine
     const activeSession = recoveredSessionId || sessionId;
     
-    // Generically package evaluated mapping
+    // Clone responses for evaluation
     const finalEvaluatedResponses = { ...responses };
 
-    // If it's the final submission (CODING) or a violation, evaluate coding questions
+    // 1. Evaluate Coding Questions (Server-Side)
     if (!isStageTransition || isViolation) {
-       for (const q of (questions || [])) {
-          if (q.type === 'CODING' && q.testCases && responses[q._id]) {
-             const evalResult = await evaluateCodingQuestion(responses[q._id].codeStr, q.testCases);
-             finalEvaluatedResponses[q._id] = {
-                codeStr: responses[q._id].codeStr,
-                testsPassed: evalResult.testsPassed || 0,
-                totalTests: evalResult.totalTests || q.testCases.length,
-                errorState: evalResult.error || null
-             };
+      for (const q of (questions || [])) {
+        if (q.type === 'CODING' && finalEvaluatedResponses[q._id]) {
+          try {
+            const studentCode = finalEvaluatedResponses[q._id].codeStr || q.boilerplateCode || "";
+            const wrappedCode = generateWrappedCode(studentCode, q.testCases || []);
+            
+            const res = await fetch("/api/exam/evaluate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ wrappedCode })
+            });
+
+            const evalData = await res.json();
+            
+            if (!evalData.success) {
+               // Handle CE/TLE/RE Global states
+               finalEvaluatedResponses[q._id] = {
+                  ...finalEvaluatedResponses[q._id],
+                  testsPassed: 0,
+                  totalTests: (q.testCases || []).length,
+                  verdict: evalData.verdict || "FAILED",
+                  evalError: evalData.message
+               };
+               continue;
+            }
+
+            // Calculate Partial Weighted Score
+            let passedCount = 0;
+            let passedWeight = 0;
+            let totalWeight = 0;
+
+            const results = evalData.results;
+            (q.testCases || []).forEach((tc: any, idx: number) => {
+               const r = results.find((res: any) => res.index === idx);
+               const w = tc.weight || 1;
+               totalWeight += w;
+
+               // Comparison Logic (Trimmed Normalized Strings)
+               const actualNorm = (r?.actual || "").toLowerCase().trim();
+               const expectedNorm = (tc.expectedOutput || "").toLowerCase().trim();
+
+               if (actualNorm === expectedNorm && !r?.error) {
+                  passedCount++;
+                  passedWeight += w;
+               }
+            });
+
+            const weightedScore = totalWeight > 0 ? (passedWeight / totalWeight) * 100 : 0;
+            
+            // HackerRank Rule: Only preserve higher scores
+            const currentRecord = responses[q._id];
+            const previousBest = currentRecord.score || 0;
+
+            finalEvaluatedResponses[q._id] = {
+              ...finalEvaluatedResponses[q._id],
+              testsPassed: passedCount,
+              totalTests: (q.testCases || []).length,
+              score: Math.max(previousBest, Math.round(weightedScore)),
+              results: results // Store for summary
+            };
+
+          } catch (e) {
+            console.error("Critical Evaluation Failure:", e);
           }
-       }
+        }
+      }
     }
 
-    // Submit cleanly evaluated json map to database node
     try {
       const res = await fetch('/api/exam/submit', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ 
-            sessionId: activeSession, 
-            candidateId, 
-            finalResponses: finalEvaluatedResponses,
-            stageAction: isStageTransition ? 'MCQ_SUBMIT' : 'FINAL_SUBMIT'
-         })
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: recoveredSessionId || sessionId,
+          candidateId,
+          finalResponses: finalEvaluatedResponses,
+          stageAction: forceStage === 'MCQ' ? 'MCQ_SUBMIT' : 'FULL_SUBMIT'
+        })
       });
       
       if (!res.ok) {
@@ -562,11 +687,21 @@ export default function ExamDashboard() {
             )}
 
             {currentQ?.type === 'CODING' && (
+              <>
               <div className="rounded-2xl overflow-hidden border border-border/50 shadow-2xl shadow-black/80 bg-[#1e1e1e] h-[550px] relative">
-                <div className="h-10 bg-muted/20 border-b border-border/30 flex items-center px-4 justify-between">
+                <div className="h-10 bg-muted/20 border-b border-border/30 flex items-center px-4 justify-between shrink-0">
                    <div className="flex items-center gap-2">
                       <Code className="h-4 w-4 text-accent" />
-                      <span className="text-[10px] uppercase tracking-widest font-bold text-muted-foreground">Compiler Suite v1.0</span>
+                      <span className="text-[10px] uppercase tracking-widest font-bold text-muted-foreground mr-4">JavaScript (Node.js)</span>
+                      <Button 
+                        size="sm" 
+                        variant="secondary" 
+                        disabled={runningTests}
+                        onClick={runLocalTests}
+                        className="h-7 text-[10px] uppercase tracking-widest font-bold bg-accent/20 text-accent hover:bg-accent hover:text-accent-foreground border-accent/30"
+                      >
+                         {runningTests ? "Executing..." : "Run Test Suite"}
+                      </Button>
                    </div>
                    <div className="flex gap-1.5">
                       <div className="h-2 w-2 rounded-full bg-destructive/40" />
@@ -596,6 +731,120 @@ export default function ExamDashboard() {
                   }}
                 />
               </div>
+
+              {/* Test Case Laboratory Section */}
+              <div className="space-y-4 pt-6">
+                <div className="flex items-center gap-2 mb-2">
+                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                   <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Test Case Laboratory</h4>
+                </div>
+                
+                {testResults && (
+                  <div className={`flex items-center gap-4 border p-4 rounded-2xl mb-6 shadow-xl shadow-black/20 animate-in fade-in slide-in-from-top-4 duration-500 ${testResults.length > (currentQ.testCases || []).filter((tc: any) => !tc.isHidden).length ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-card/60 border-border/40'}`}>
+                    <div className={`h-12 w-12 rounded-2xl flex items-center justify-center shadow-inner ${testResults.length > (currentQ.testCases || []).filter((tc: any) => !tc.isHidden).length ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                      {testResults.length > (currentQ.testCases || []).filter((tc: any) => !tc.isHidden).length ? <ShieldAlert className="h-6 w-6" /> : <Code className="h-6 w-6" />}
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest opacity-60">
+                         {testResults.length > (currentQ.testCases || []).filter((tc: any) => !tc.isHidden).length ? 'Complete Submission Diagnostics' : 'Public Logic Verification'}
+                      </p>
+                      <p className="text-lg font-bold tracking-tight">
+                         Successfully Satistfied {testResults.filter((r: any) => {
+                            const tc = currentQ.testCases[r.index];
+                            const expectedNorm = (tc?.expectedOutput || "").toLowerCase().trim();
+                            const actualNorm = (r?.actual || "").toLowerCase().trim();
+                            return actualNorm === expectedNorm && !r.error;
+                         }).length} of {testResults.length} Guards
+                      </p>
+                    </div>
+                    <div className="ml-auto text-3xl font-black italic opacity-10">
+                       {Math.round((testResults.filter((r: any) => {
+                            const tc = currentQ.testCases[r.index];
+                            const expectedNorm = (tc?.expectedOutput || "").toLowerCase().trim();
+                            const actualNorm = (r?.actual || "").toLowerCase().trim();
+                            return actualNorm === expectedNorm && !r.error;
+                         }).length / testResults.length) * 100)}%
+                    </div>
+                  </div>
+                )}
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   {(currentQ.testCases || []).map((tc: any, originalIdx: number) => {
+                      const result = testResults?.find((r: any) => r.index === originalIdx);
+                      // Skip hidden ones ONLY if we don't have a result for them (during "Run Code")
+                      if (tc.isHidden && !result) return null;
+
+                      const expectedNorm = (tc.expectedOutput || "").trim();
+                      const actualNorm = (result?.actual || "").trim();
+                      const isCorrect = result && !result.error && (actualNorm.toLowerCase() === expectedNorm.toLowerCase());
+                      
+                      return (
+                        <div key={originalIdx} className={`p-4 rounded-xl border transition-all ${result ? (isCorrect ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-destructive/30 bg-destructive/5') : 'border-border/30 bg-card/40'}`}>
+                           <div className="flex justify-between items-center mb-3">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold text-muted-foreground/60 uppercase">
+                                   {tc.isHidden ? "Hidden Layer Verification" : `Sample Case #${originalIdx + 1}`}
+                                </span>
+                                {tc.isHidden && <ShieldAlert className="h-3 w-3 text-muted-foreground/50" />}
+                              </div>
+                              {result && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[9px] font-mono text-muted-foreground/50">{result.runtime}ms</span>
+                                  <span className={`text-[9px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded-full ${isCorrect ? 'bg-emerald-500/20 text-emerald-500' : 'bg-destructive/20 text-destructive'}`}>
+                                     {isCorrect ? 'Accepted' : result.error ? 'Runtime Error' : 'Wrong Answer'}
+                                  </span>
+                                </div>
+                              )}
+                           </div>
+                           <div className="space-y-2">
+                              <div className="flex flex-col gap-1">
+                                 <span className="text-[9px] font-bold text-muted-foreground uppercase opacity-60">Input</span>
+                                 <pre className="text-[11px] font-mono p-2 bg-black/20 rounded-md border border-white/5 overflow-hidden truncate">
+                                    {tc.isHidden ? "[ HIDDEN LOGIC ]" : tc.input}
+                                 </pre>
+                              </div>
+                              <div className="flex flex-col gap-1">
+                                 <span className="text-[9px] font-bold text-muted-foreground uppercase opacity-60">Expected Output</span>
+                                 <pre className="text-[11px] font-mono p-2 bg-emerald-500/5 rounded-md border border-emerald-500/10 text-emerald-500/80 overflow-hidden truncate">
+                                    {tc.isHidden ? "[ HIDDEN EXPECTED ]" : tc.expectedOutput}
+                                 </pre>
+                              </div>
+                              {result && (
+                                 <div className="flex flex-col gap-1 pt-2">
+                                    <span className={`text-[9px] font-bold uppercase tracking-widest opacity-60 ${isCorrect ? 'text-emerald-500' : 'text-destructive'}`}>Your Output</span>
+                                    <pre className={`text-[11px] font-mono p-2 rounded-md border overflow-hidden truncate ${isCorrect ? 'bg-emerald-500/5 border-emerald-500/10 text-emerald-500' : 'bg-destructive/5 border-destructive/10 text-destructive'}`}>
+                                       {result.error || String(result.actual)}
+                                    </pre>
+                                 </div>
+                              )}
+                           </div>
+                        </div>
+                      );
+                   })}
+                </div>
+
+                {testResults && currentQ.testCases?.some((tc: any) => tc.isHidden) && (
+                   <div className="flex items-center justify-between px-5 py-3 bg-black/40 rounded-2xl border border-white/5 shadow-inner group">
+                      <div className="flex items-center gap-3">
+                         <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                         <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground group-hover:text-foreground transition-colors">Background Verification Layer</span>
+                      </div>
+                      <div className="flex items-center gap-2 font-mono text-[11px]">
+                         <span className="text-emerald-500/80">{testResults.filter(r => currentQ.testCases[r.index].isHidden && r.passed).length}</span>
+                         <span className="opacity-20">/</span>
+                         <span className="text-muted-foreground/60">{currentQ.testCases.filter((tc: any) => tc.isHidden).length}</span>
+                         <span className="ml-1 text-[9px] text-muted-foreground/40 uppercase tracking-tighter">Guards Satisfied</span>
+                      </div>
+                   </div>
+                )}
+
+                {(!currentQ.testCases || currentQ.testCases.filter((t: any) => !t.isHidden).length === 0) && (
+                      <div className="col-span-2 p-6 text-center border border-dashed border-border/30 rounded-2xl italic text-muted-foreground/50 text-xs">
+                         This programming sandbox uses hidden logic verification only. No public test cases available for this concept.
+                      </div>
+                   )}
+                </div>
+              </>
             )}
           </motion.div>
         </div>

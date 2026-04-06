@@ -11,7 +11,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     const { id: candidateId } = await context.params;
     
     // 1. Fetch the Candidate
-    const candidate = await Candidate.findById(candidateId).select("name examScore collegeRollNumber");
+    const candidate = await Candidate.findById(candidateId).select("name examScore collegeRollNumber driveId");
     if (!candidate) return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
 
     // 2. Fetch the COMPLETED or TERMINATED session
@@ -29,8 +29,12 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
       });
     }
 
-    // 3. Fetch All Questions to compare
-    const questions = await Question.find({});
+    // 3. Fetch ONLY relevant questions (those in the session or for the drive)
+    const query = session.questionIds && session.questionIds.length > 0 
+       ? { _id: { $in: session.questionIds } }
+       : { driveId: candidate.driveId };
+    
+    const questions = await Question.find(query);
     
     // 4. Build the comparison report
     const responses = session.responses || {};
