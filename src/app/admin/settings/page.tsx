@@ -186,7 +186,13 @@ export default function MasterSchedulePage() {
         fetch(`/api/admin/drives/${drive._id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(drive)
+          body: JSON.stringify({
+            ...drive,
+            regStart: drive.regStart ? new Date(drive.regStart).toISOString() : "",
+            regEnd: drive.regEnd ? new Date(drive.regEnd).toISOString() : "",
+            examStart: drive.examStart ? new Date(drive.examStart).toISOString() : "",
+            examEnd: drive.examEnd ? new Date(drive.examEnd).toISOString() : ""
+          })
         })
       ));
       setModifiedIds(new Set());

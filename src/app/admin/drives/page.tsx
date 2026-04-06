@@ -70,7 +70,13 @@ export default function DrivesManagement() {
       const res = await fetch("/api/admin/drives", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData)
+        body: JSON.stringify({
+          ...formData,
+          regStart: formData.regStart ? new Date(formData.regStart).toISOString() : "",
+          regEnd: formData.regEnd ? new Date(formData.regEnd).toISOString() : "",
+          examStart: formData.examStart ? new Date(formData.examStart).toISOString() : "",
+          examEnd: formData.examEnd ? new Date(formData.examEnd).toISOString() : ""
+        })
       });
       if (res.ok) {
         setShowCreateDialog(false);
