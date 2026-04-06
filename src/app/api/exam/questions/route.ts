@@ -67,12 +67,42 @@ export async function GET(req: Request) {
       });
     } else {
       // RESUME: Fetch the exact questions already picked for this student
-      const pickedIds = session.questionIds || [];
+      let pickedIds = session.questionIds || [];
+      const targetDriveObjectId = new mongoose.Types.ObjectId(drive._id as string);
+
       if (pickedIds.length > 0) {
         questionsToDeliver = await Question.find({ _id: { $in: pickedIds } });
+
+        // SESSION REPAIR (Self-Healing):
+        // If the session is at MCQ stage or just transition to CODING, check if it's missing coding questions
+        // but the drive configuration expects them.
+        const hasCoding = questionsToDeliver.some(q => q.type === 'CODING');
+        const expectedCoding = drive.codingCount || 0;
+
+        if (!hasCoding && expectedCoding > 0) {
+           console.log(`Self-Healing: Pooling missing coding questions for session ${session._id}`);
+           const poolCoding = await Question.aggregate([
+             { $match: { driveId: targetDriveObjectId, type: 'CODING' } },
+             { $sample: { size: expectedCoding } }
+           ]);
+
+           if (poolCoding.length > 0) {
+              const newIds = poolCoding.map(q => q._id);
+              // Update database session so it persists for future reloads
+              await ExamSession.findByIdAndUpdate(session._id, {
+                 $push: { questionIds: { $each: newIds } }
+              });
+              // Append to current delivery
+              questionsToDeliver = [...questionsToDeliver, ...poolCoding];
+           }
+        }
       } else {
-        // Fallback for sessions created before this architectural change
+        // Fallback for legacy sessions: Assign all current drive questions
         questionsToDeliver = await Question.find({ driveId: drive._id });
+        // Update session with these IDs to "lock" them now
+        await ExamSession.findByIdAndUpdate(session._id, {
+           $set: { questionIds: questionsToDeliver.map(q => q._id) }
+        });
       }
     }
 

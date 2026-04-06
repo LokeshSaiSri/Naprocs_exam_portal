@@ -47,23 +47,28 @@ export async function POST(req: Request) {
       },
       { new: true }
     );
-
+ 
     if (!session) {
       return NextResponse.json({ error: "Session invalidation error" }, { status: 404 });
     }
-
-    // Generate Final Score calculation
-    // Pull the master bank
-    const masterQuestions = await Question.find({}).lean();
+ 
+    // 3. Generate Final Score calculation
+    // Pull the specific questions assigned to THIS candidate
+    const assignedQuestions = await Question.find({ _id: { $in: session.questionIds } }).lean();
+    
+    // Fallback for legacy sessions or edge cases where questionIds might be missing
+    const evaluationPool = assignedQuestions.length > 0 
+       ? assignedQuestions 
+       : await Question.find({ _id: { $in: Object.keys(finalResponses) } }).lean();
     
     let totalScore = 0;
-    let maximumPossibleScore = masterQuestions.length * 10; // Generic arbitrary scale (10 points per module)
-
-    for (const q of masterQuestions) {
+    const maximumPossibleScore = evaluationPool.length * 10; // 10 points per module
+ 
+    for (const q of evaluationPool) {
        const userRes = finalResponses[q._id.toString()];
        
        if (q.type === 'MCQ') {
-          // Robust MCQ match logic: Check if text matches q.correctAnswer OR if it matches q.options[q.correctAnswer]
+          // Precise MCQ match logic: Check if text matches q.correctAnswer
           const isCorrectIndex = typeof q.correctAnswer === 'number' || !isNaN(Number(q.correctAnswer));
           const expectedText = isCorrectIndex ? q.options[Number(q.correctAnswer)] : q.correctAnswer;
           
@@ -78,8 +83,10 @@ export async function POST(req: Request) {
           }
        }
     }
-
-    const percentileScore = Math.floor((totalScore / maximumPossibleScore) * 100);
+ 
+    const percentileScore = maximumPossibleScore > 0 
+       ? Math.floor((totalScore / maximumPossibleScore) * 100)
+       : 0;
 
     // Patch Candidate Master Instance
     await Candidate.findByIdAndUpdate(candidateId, {

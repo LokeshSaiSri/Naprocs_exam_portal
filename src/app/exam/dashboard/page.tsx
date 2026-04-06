@@ -194,7 +194,7 @@ export default function ExamDashboard() {
 
     // If it's the final submission (CODING) or a violation, evaluate coding questions
     if (!isStageTransition || isViolation) {
-       for (const q of questions) {
+       for (const q of (questions || [])) {
           if (q.type === 'CODING' && q.testCases && responses[q._id]) {
              const evalResult = await evaluateCodingQuestion(responses[q._id].codeStr, q.testCases);
              finalEvaluatedResponses[q._id] = {
@@ -355,7 +355,7 @@ export default function ExamDashboard() {
                 <AlertTriangle className="h-8 w-8 text-destructive animate-pulse" />
              </div>
              <DialogTitle className="text-2xl font-bold text-destructive tracking-tight">Proctoring Violation</DialogTitle>
-             <DialogDescription className="text-base text-foreground/80 mt-2">
+             <DialogDescription render={<div />} className="text-base text-foreground/80 mt-2">
                 System detected you switched tabs or left the secure environment. This incident has been logged.
                 <br/><br/>
                 {settings?.proctoringSeverity === 'MEDIUM' ? (
@@ -388,8 +388,8 @@ export default function ExamDashboard() {
              <div className="h-16 w-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mb-6 mx-auto">
                 <CheckCircle2 className="h-8 w-8 text-primary animate-pulse" />
              </div>
-             <DialogTitle className="text-2xl font-bold tracking-tight">Finalize MCQ Section?</DialogTitle>
-             <DialogDescription className="text-base text-foreground/80 mt-2">
+              <DialogTitle className="text-2xl font-bold tracking-tight">Finalize MCQ Section?</DialogTitle>
+             <DialogDescription render={<div />} className="text-base text-foreground/80 mt-2">
                 You are about to submit the objective section and proceed to the programming sandbox.
                 <br/><br/>
                 {unansweredCount > 0 ? (
@@ -428,7 +428,7 @@ export default function ExamDashboard() {
                 <ShieldAlert className="h-8 w-8 text-emerald-500 animate-pulse" />
              </div>
              <DialogTitle className="text-2xl font-bold tracking-tight">Final Submission</DialogTitle>
-             <DialogDescription className="text-base text-foreground/80 mt-2">
+             <DialogDescription render={<div />} className="text-base text-foreground/80 mt-2">
                 You are about to submit your entire assessment for evaluation.
                 <br/><br/>
                 {unansweredCount > 0 ? (
@@ -522,29 +522,29 @@ export default function ExamDashboard() {
 
         <div className="flex-1 overflow-auto p-4 md:p-8">
           <motion.div
-            key={`${examStage}-${currentQ._id}`}
+            key={`${examStage}-${currentQ?._id || 'loading'}`}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             className="max-w-5xl mx-auto space-y-8"
           >
             <div className="space-y-4">
-              <div className={`inline-flex px-3 py-1 rounded-full border font-semibold text-[10px] tracking-widest uppercase ${currentQ.type === 'CODING' ? 'bg-accent/10 border-accent/20 text-accent' : 'bg-primary/10 border-primary/20 text-primary'}`}>
-                {currentQ.type === 'CODING' ? 'Programming Sandbox' : 'Objective Assessment'}
+              <div className={`inline-flex px-3 py-1 rounded-full border font-semibold text-[10px] tracking-widest uppercase ${currentQ?.type === 'CODING' ? 'bg-accent/10 border-accent/20 text-accent' : 'bg-primary/10 border-primary/20 text-primary'}`}>
+                {currentQ?.type === 'CODING' ? 'Programming Sandbox' : 'Objective Assessment'}
               </div>
               <h2 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight text-foreground/90">
-                {currentQ.title}
+                {currentQ?.title}
               </h2>
-              <div className="prose prose-invert max-w-none text-foreground/70 font-medium leading-relaxed pb-6 border-b border-border/40" dangerouslySetInnerHTML={{ __html: currentQ.content || '' }} />
+              <div className="prose prose-invert max-w-none text-foreground/70 font-medium leading-relaxed pb-6 border-b border-border/40" dangerouslySetInnerHTML={{ __html: currentQ?.content || '' }} />
             </div>
 
-            {currentQ.type === 'MCQ' && currentQ.options && (
+            {currentQ?.type === 'MCQ' && currentQ.options && (
               <RadioGroup 
-                value={responses[currentQ._id]?.selectedOption || ""} 
-                onValueChange={(val) => updateResponse(currentQ._id, { selectedOption: val })}
+                value={responses[currentQ?._id || ""]?.selectedOption || ""} 
+                onValueChange={(val) => updateResponse(currentQ?._id || "", { selectedOption: val })}
                 className="space-y-3"
               >
                 {currentQ.options.map((opt: string, i: number) => {
-                  const checked = responses[currentQ._id]?.selectedOption === opt;
+                  const checked = responses[currentQ?._id || ""]?.selectedOption === opt;
                   return (
                     <Label 
                       key={i} 
@@ -561,7 +561,7 @@ export default function ExamDashboard() {
               </RadioGroup>
             )}
 
-            {currentQ.type === 'CODING' && (
+            {currentQ?.type === 'CODING' && (
               <div className="rounded-2xl overflow-hidden border border-border/50 shadow-2xl shadow-black/80 bg-[#1e1e1e] h-[550px] relative">
                 <div className="h-10 bg-muted/20 border-b border-border/30 flex items-center px-4 justify-between">
                    <div className="flex items-center gap-2">
@@ -578,8 +578,8 @@ export default function ExamDashboard() {
                   height="calc(100% - 40px)"
                   defaultLanguage="javascript"
                   theme="vs-dark"
-                  value={responses[currentQ._id]?.codeStr || currentQ.boilerplateCode || ""}
-                  onChange={(val) => updateResponse(currentQ._id, { codeStr: val || "" })}
+                  value={responses[currentQ?._id || ""]?.codeStr || currentQ?.boilerplateCode || ""}
+                  onChange={(val) => updateResponse(currentQ?._id || "", { codeStr: val || "" })}
                   options={{ 
                     minimap: { enabled: false }, 
                     fontSize: 15, 
