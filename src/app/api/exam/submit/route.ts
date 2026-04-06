@@ -83,67 +83,89 @@ export async function POST(req: Request) {
           
           if (testCases.length === 0) continue;
 
-          // 1. Generate Wrapped Code (matching client logic)
+          // 1. Generate Universal Wrapped Code
           const funcMatch = studentCode.match(/function\s+([a-zA-Z0-9_$]+)/);
           const entryPoint = funcMatch ? funcMatch[1] : null;
 
           const wrappedCode = `
             (function(global) {
-              try {
-                ${studentCode}
-                global.RESULTS = [];
-                const cases = ${JSON.stringify(testCases)};
-                const entry = "${entryPoint}";
+              global.RESULTS = [];
+              const cases = ${JSON.stringify(testCases)};
+              const entry = "${entryPoint}";
 
-                for (let i = 0; i < cases.length; i++) {
-                   const tc = cases[i];
-                   const res = { index: i, actual: null, error: null }; 
-                   try {
-                      if (!entry || typeof eval(entry) !== 'function') {
-                         throw new Error("Function signature mismatch");
-                      }
-                      
-                      let args = [];
-                      const rawInput = (tc.input || "").trim();
-                      if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
-                        args = [JSON.parse(rawInput)];
-                      } else {
-                        args = rawInput.split(',').map(v => {
-                           const s = v.trim();
-                           if (!isNaN(s) && s !== "" && !s.startsWith("0b") && !s.startsWith("0x")) return Number(s);
-                           if (s === 'true') return true;
-                           if (s === 'false') return false;
-                           return s;
-                        });
-                      }
+              for (let i = 0; i < cases.length; i++) {
+                 const tc = cases[i];
+                 const res = { index: i, actual: null, error: null }; 
+                 
+                 global.STDOUT = [];
+                 global.STDIN_CONTENT = (tc.input || "").toString();
 
-                      let actual = eval(entry)(...args);
-                      if (actual === undefined) throw new Error("Logic returned undefined");
-
-                      if (typeof actual === 'number' && !Number.isInteger(actual)) {
-                         actual = parseFloat(actual.toFixed(5));
+                 try {
+                    (function() {
+                      ${studentCode}
+                      if (global.STDOUT.length === 0 && entry && typeof eval(entry) === 'function') {
+                         let args = [];
+                         const rawInput = (tc.input || "").trim();
+                         if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
+                           args = [JSON.parse(rawInput)];
+                         } else {
+                           args = rawInput.split(',').map(v => {
+                              const s = v.trim();
+                              if (!isNaN(s) && s !== "" && !s.startsWith("0b") && !s.startsWith("0x")) return Number(s);
+                              if (s === 'true') return true;
+                              if (s === 'false') return false;
+                              return s;
+                           });
+                         }
+                         let retValue = eval(entry)(...args);
+                         if (retValue !== undefined) {
+                            if (Array.isArray(retValue) || (retValue !== null && typeof retValue === 'object')) {
+                               retValue = JSON.stringify(retValue);
+                            }
+                            global.STDOUT.push(String(retValue));
+                         }
                       }
-                      if (Array.isArray(actual) || (actual !== null && typeof actual === 'object')) {
-                         actual = JSON.stringify(actual);
-                      }
-                      res.actual = String(actual).trim();
-                   } catch(e) {
-                      res.error = e.message;
-                   }
-                   global.RESULTS.push(res);
-                }
-              } catch(e) {
-                 throw new Error("VM_EXECUTION_ERROR: " + e.message);
+                    })();
+                    res.actual = global.STDOUT.join('\\n').trim();
+                 } catch(e) {
+                    res.error = e.message;
+                 }
+                 global.RESULTS.push(res);
               }
             })(this);
           `;
 
-          // 2. Execute in VM
-          const sandbox: any = { RESULTS: null };
+          // 2. Setup Secure Sandbox with Mocks
+          const sandbox: any = { 
+             RESULTS: null,
+             STDOUT: [],
+             STDIN_CONTENT: "",
+             Buffer: Buffer,
+             require: (id: string) => {
+                if (id === 'fs') {
+                   return {
+                      readFileSync: (fd: any) => {
+                         if (fd === 0 || fd === '/dev/stdin') return sandbox.STDIN_CONTENT;
+                         throw new Error("FS restricted");
+                      }
+                   };
+                }
+                throw new Error("Module restricted");
+             },
+             console: {
+                log: (...args: any[]) => {
+                   sandbox.STDOUT.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+                }
+             },
+             process: {
+                stdout: { write: (s: string) => sandbox.STDOUT.push(s) }
+             }
+          };
+
           try {
             const context = vm.createContext(sandbox);
             const script = new vm.Script(wrappedCode);
-            script.runInContext(context, { timeout: 2000 });
+            script.runInContext(context, { timeout: 3000 });
             
             const results = sandbox.RESULTS;
             if (results && Array.isArray(results)) {
@@ -156,8 +178,6 @@ export async function POST(req: Request) {
                   passedCount++;
                 }
               });
-              
-              // Points based on percentage of passed tests (Total 10 per question)
               totalScore += Math.floor((passedCount / testCases.length) * 10);
             }
           } catch (e: any) {
