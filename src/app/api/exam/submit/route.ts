@@ -9,13 +9,37 @@ export async function POST(req: Request) {
     await connectToDatabase();
 
     const body = await req.json();
-    const { sessionId, candidateId, finalResponses } = body;
+    const { sessionId, candidateId, finalResponses, stageAction } = body;
 
     if (!sessionId || !candidateId) {
       return NextResponse.json({ error: "Missing identity constraints" }, { status: 400 });
     }
 
-    // Terminate Session
+    // 1. Handle Stage Transition (MCQ -> CODING)
+    if (stageAction === 'MCQ_SUBMIT') {
+       const session = await ExamSession.findByIdAndUpdate(
+          sessionId,
+          { 
+             $set: { 
+                responses: finalResponses, 
+                currentStage: 'CODING' 
+             } 
+          },
+          { new: true }
+       );
+       
+       if (!session) {
+          return NextResponse.json({ error: "Session transition error" }, { status: 404 });
+       }
+
+       return NextResponse.json({ 
+          success: true, 
+          message: "MCQ Stage Submitted. Proceeding to Coding Section.",
+          nextStage: 'CODING'
+       }, { status: 200 });
+    }
+
+    // 2. Full Completion (CODING -> END)
     const session = await ExamSession.findByIdAndUpdate(
       sessionId,
       { 

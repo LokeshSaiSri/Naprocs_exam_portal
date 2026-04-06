@@ -10,7 +10,8 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   
   const isActive = (path: string) => {
     if (path === '/admin') return pathname === '/admin';
-    return pathname.startsWith(path);
+    // Use exact matching for high-level directories or regex boundary
+    return pathname === path || pathname.startsWith(`${path}/`);
   };
 
   if (pathname === '/admin/login') {

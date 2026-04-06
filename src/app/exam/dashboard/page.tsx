@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import Editor from "@monaco-editor/react";
 import { 
   AlertTriangle, ChevronLeft, ChevronRight, Clock, 
-  LayoutDashboard, CheckCircle2, Circle, Menu, Code
+  LayoutDashboard, CheckCircle2, Circle, Menu, Code, ShieldAlert
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,23 +28,62 @@ export default function ExamDashboard() {
   const candidateId = candidate?.id || "";
 
   // New Auto-Sync Hook Integration
-  const { questions, settings, responses, updateResponse, manualSync, isSyncing, recoveredSessionId } = useExamSync(candidateId, sessionId);
+  const { 
+    questions, 
+    settings, 
+    responses, 
+    examStage, 
+    setExamStage, 
+    updateResponse, 
+    manualSync, 
+    isSyncing, 
+    recoveredSessionId 
+  } = useExamSync(candidateId, sessionId);
 
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [timeLeft, setTimeLeft] = useState(3600); 
   const [timerInitialized, setTimerInitialized] = useState(false);
   const [showWarningModal, setShowWarningModal] = useState(false);
+  const [showStageTransitionModal, setShowStageTransitionModal] = useState(false);
+  const [showFinalSubmitModal, setShowFinalSubmitModal] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isTerminated, setIsTerminated] = useState(false);
   const [finalCandidateData, setFinalCandidateData] = useState<{name: string, roll: string} | null>(null);
 
-  // Initialize timer from settings
+  // Derive stage-specific questions
+  const stageQuestions = (questions || []).filter(q => q.type === examStage);
+
+  const unansweredCount = stageQuestions.filter(q => {
+     const res = responses[q._id];
+     if (!res) return true;
+     if (q.type === 'MCQ') return !res.selectedOption;
+     if (q.type === 'CODING') return !res.codeStr || res.codeStr.trim() === '';
+     return false;
+  }).length;
+
+  // Reset index if stage changes or if index is out of bounds for the current stage
   useEffect(() => {
-    if (settings?.examDuration && !timerInitialized) {
-      setTimeLeft(settings.examDuration * 60);
-      setTimerInitialized(true);
+    setCurrentQuestionIndex(0);
+  }, [examStage]);
+
+  // Initialize timer from settings with Hard Cutoff Enforcement
+  useEffect(() => {
+    if (settings?.examDuration && settings?.examEnd && !timerInitialized) {
+       const now = new Date();
+       const driveEnd = new Date(settings.examEnd);
+       const durationSeconds = settings.examDuration * 60;
+       
+       // Calculate remaining time until the drive window strictly closes
+       const remainingToGlobalEnd = Math.max(0, Math.floor((driveEnd.getTime() - now.getTime()) / 1000));
+       
+       // Timer should be the lesser of (Full Duration) and (Time left until Drive Ends)
+       // This ensures late-joiners only get the remaining window time.
+       const initialTime = Math.min(durationSeconds, remainingToGlobalEnd);
+       
+       setTimeLeft(initialTime);
+       setTimerInitialized(true);
     }
   }, [settings, timerInitialized]);
 
@@ -139,26 +178,32 @@ export default function ExamDashboard() {
      await handleSubmit(true);
   };
 
-  const handleSubmit = async (isViolation: boolean = false) => {
+  const handleSubmit = async (isViolation: boolean = false, forceStage?: 'MCQ' | 'CODING') => {
     if (isSubmitting) return;
     setIsSubmitting(true);
     
+    // Determine context (Partial Stage Submit vs Final Submission)
+    const targetStage = forceStage || examStage;
+    const isStageTransition = targetStage === 'MCQ' && !isViolation;
+
     // Use the legitimate sessionId from the sync engine
     const activeSession = recoveredSessionId || sessionId;
     
     // Generically package evaluated mapping
     const finalEvaluatedResponses = { ...responses };
 
-    // Before submit, spin up workers to test all coding strings currently residing in state
-    for (const q of questions) {
-       if (q.type === 'CODING' && q.testCases && responses[q._id]) {
-          const evalResult = await evaluateCodingQuestion(responses[q._id].codeStr, q.testCases);
-          finalEvaluatedResponses[q._id] = {
-             codeStr: responses[q._id].codeStr,
-             testsPassed: evalResult.testsPassed || 0,
-             totalTests: evalResult.totalTests || q.testCases.length,
-             errorState: evalResult.error || null
-          };
+    // If it's the final submission (CODING) or a violation, evaluate coding questions
+    if (!isStageTransition || isViolation) {
+       for (const q of questions) {
+          if (q.type === 'CODING' && q.testCases && responses[q._id]) {
+             const evalResult = await evaluateCodingQuestion(responses[q._id].codeStr, q.testCases);
+             finalEvaluatedResponses[q._id] = {
+                codeStr: responses[q._id].codeStr,
+                testsPassed: evalResult.testsPassed || 0,
+                totalTests: evalResult.totalTests || q.testCases.length,
+                errorState: evalResult.error || null
+             };
+          }
        }
     }
 
@@ -167,7 +212,12 @@ export default function ExamDashboard() {
       const res = await fetch('/api/exam/submit', {
          method: 'POST',
          headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ sessionId: activeSession, candidateId, finalResponses: finalEvaluatedResponses })
+         body: JSON.stringify({ 
+            sessionId: activeSession, 
+            candidateId, 
+            finalResponses: finalEvaluatedResponses,
+            stageAction: isStageTransition ? 'MCQ_SUBMIT' : 'FINAL_SUBMIT'
+         })
       });
       
       if (!res.ok) {
@@ -175,12 +225,17 @@ export default function ExamDashboard() {
         throw new Error(errorData.error || "Submission rejected by server");
       }
 
-      if (candidate) {
-        setFinalCandidateData({ name: candidate.name, roll: candidate.collegeRollNumber });
+      if (isStageTransition) {
+         setExamStage('CODING');
+         setShowStageTransitionModal(false);
+      } else {
+         if (candidate) {
+            setFinalCandidateData({ name: candidate.name, roll: candidate.collegeRollNumber });
+         }
+         setIsSubmitted(true);
+         if (isViolation) setIsTerminated(true);
+         logout();
       }
-      setIsSubmitted(true);
-      if (isViolation) setIsTerminated(true);
-      logout();
     } catch (e: any) {
       console.error("Submit API Failure:", e);
       alert(`Submission Failed: ${e.message}. Please try again once or contact support.`);
@@ -277,8 +332,16 @@ export default function ExamDashboard() {
   }
 
   // 3. Main Dashboard View
-  const currentQ = questions[currentQuestionIndex];
+  const currentQ = stageQuestions[currentQuestionIndex];
   const isAnswered = (id: string) => !!responses[id];
+
+  if (!currentQ && stageQuestions.length === 0) {
+     return (
+        <div className="h-screen w-full flex items-center justify-center bg-background font-mono text-primary">
+           Synchronizing Section Content...
+        </div>
+     );
+  }
 
   return (
     <div className="h-screen w-full flex bg-background overflow-hidden relative selection:bg-none font-sans">
@@ -318,6 +381,82 @@ export default function ExamDashboard() {
         </DialogContent>
       </Dialog>
 
+      {/* Stage Transition Modal */}
+      <Dialog open={showStageTransitionModal && !isTerminated} onOpenChange={setShowStageTransitionModal}>
+        <DialogContent className="border-primary/30 bg-card/60 backdrop-blur-2xl sm:max-w-md">
+          <DialogHeader className="pt-4 text-center">
+             <div className="h-16 w-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mb-6 mx-auto">
+                <CheckCircle2 className="h-8 w-8 text-primary animate-pulse" />
+             </div>
+             <DialogTitle className="text-2xl font-bold tracking-tight">Finalize MCQ Section?</DialogTitle>
+             <DialogDescription className="text-base text-foreground/80 mt-2">
+                You are about to submit the objective section and proceed to the programming sandbox.
+                <br/><br/>
+                {unansweredCount > 0 ? (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-500 text-sm font-medium flex items-center gap-3">
+                     <AlertTriangle className="h-5 w-5" />
+                     Attention: {unansweredCount} questions are still unanswered.
+                  </div>
+                ) : (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-500 text-sm font-medium flex items-center gap-3">
+                     <CheckCircle2 className="h-5 w-5" />
+                     Perfect! All questions in this section have been answered.
+                  </div>
+                )}
+                <br/>
+                <span className="font-bold text-primary">
+                  Note: You cannot return to edit MCQs after this transition.
+                </span>
+             </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-center pb-2 pt-6 flex flex-col sm:flex-row gap-3">
+             <Button variant="outline" className="flex-1 h-12" onClick={() => setShowStageTransitionModal(false)}>
+                Back to Review
+             </Button>
+             <Button className="flex-1 h-12 font-bold shadow-2xl shadow-primary/20" onClick={() => handleSubmit(false, 'MCQ')}>
+                {isSubmitting ? "Syncing..." : "Confirm & Proceed"}
+             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Final Submit Modal */}
+      <Dialog open={showFinalSubmitModal && !isTerminated} onOpenChange={setShowFinalSubmitModal}>
+        <DialogContent className="border-emerald-500/30 bg-card/60 backdrop-blur-2xl sm:max-w-md">
+          <DialogHeader className="pt-4 text-center">
+             <div className="h-16 w-16 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-6 mx-auto">
+                <ShieldAlert className="h-8 w-8 text-emerald-500 animate-pulse" />
+             </div>
+             <DialogTitle className="text-2xl font-bold tracking-tight">Final Submission</DialogTitle>
+             <DialogDescription className="text-base text-foreground/80 mt-2">
+                You are about to submit your entire assessment for evaluation.
+                <br/><br/>
+                {unansweredCount > 0 ? (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-500 text-sm font-medium flex items-center gap-3">
+                     <AlertTriangle className="h-5 w-5" />
+                     Warning: {unansweredCount} coding problems are still unattempted.
+                  </div>
+                ) : (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-500 text-sm font-medium flex items-center gap-3">
+                     <CheckCircle2 className="h-5 w-5" />
+                     All programming tasks have been attempted.
+                  </div>
+                )}
+                <br/>
+                Once submitted, your responses will be encrypted and transmitted for final grading.
+             </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-center pb-2 pt-6 flex flex-col sm:flex-row gap-3">
+             <Button variant="outline" className="flex-1 h-12" onClick={() => setShowFinalSubmitModal(false)}>
+                Continue Coding
+             </Button>
+             <Button className="flex-1 h-12 font-bold bg-emerald-500 hover:bg-emerald-600 shadow-2xl shadow-emerald-500/20" onClick={() => handleSubmit(false, 'CODING')}>
+                {isSubmitting ? "Finalizing..." : "Submit Everything"}
+             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Sidebar Navigation */}
       <AnimatePresence initial={false}>
         {isSidebarOpen && (
@@ -330,14 +469,16 @@ export default function ExamDashboard() {
             <div className="p-5 border-b border-border/40 flex items-center justify-between">
               <div className="flex items-center gap-3 text-foreground/80">
                 <LayoutDashboard className="h-5 w-5 text-primary" />
-                <h2 className="font-medium tracking-tight text-lg">Question Map</h2>
+                <h2 className="font-medium tracking-tight text-lg">
+                   {examStage === 'MCQ' ? 'Objective Bank' : 'Coding Sandbox'}
+                </h2>
               </div>
               {isSyncing && <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" title="Telemetry Sync Active" />}
             </div>
             
             <ScrollArea className="flex-1 p-5">
               <div className="grid grid-cols-5 gap-2 pb-10">
-                {questions.map((q, i) => {
+                {stageQuestions.map((q, i) => {
                   const answered = isAnswered(q._id);
                   const active = currentQuestionIndex === i;
                   return (
@@ -368,8 +509,8 @@ export default function ExamDashboard() {
               <Menu className="h-5 w-5" />
             </Button>
             <h1 className="font-semibold tracking-tight text-lg flex items-center gap-2">
-              Context {currentQuestionIndex + 1} 
-              <span className="text-muted-foreground text-sm font-normal">/ {questions.length} Concepts</span>
+              Section: {examStage} 
+              <span className="text-muted-foreground text-sm font-normal">— Concept {currentQuestionIndex + 1} / {stageQuestions.length}</span>
             </h1>
           </div>
           
@@ -381,7 +522,7 @@ export default function ExamDashboard() {
 
         <div className="flex-1 overflow-auto p-4 md:p-8">
           <motion.div
-            key={currentQ._id}
+            key={`${examStage}-${currentQ._id}`}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             className="max-w-5xl mx-auto space-y-8"
@@ -463,13 +604,25 @@ export default function ExamDashboard() {
           <Button variant="outline" size="lg" onClick={() => setCurrentQuestionIndex(Math.max(0, currentQuestionIndex - 1))} disabled={currentQuestionIndex === 0} className="h-12 px-6 border-border/50">
             <ChevronLeft className="h-5 w-5 mr-2" /> Previous
           </Button>
-
-          {currentQuestionIndex === questions.length - 1 ? (
-             <Button size="lg" onClick={() => handleSubmit()} disabled={isSubmitting} className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-10 h-12 shadow-lg shadow-emerald-500/20 active:scale-95 transition-all">
-               {isSubmitting ? "Encrypting Matrix..." : "Submit Final Assessment"}
-             </Button>
+ 
+          {currentQuestionIndex === stageQuestions.length - 1 ? (
+             <div className="flex flex-col items-end gap-1">
+               <Button 
+                 size="lg" 
+                 onClick={() => examStage === 'MCQ' ? setShowStageTransitionModal(true) : setShowFinalSubmitModal(true)} 
+                 disabled={isSubmitting || (examStage === 'CODING' && (timeLeft > (settings?.examDuration * 30)))} 
+                 className={`${examStage === 'MCQ' ? 'bg-primary shadow-primary/20' : 'bg-emerald-500 shadow-emerald-500/20'} text-white font-semibold px-10 h-12 shadow-lg active:scale-95 transition-all disabled:opacity-50 disabled:grayscale`}
+               >
+                 {isSubmitting ? "Encrypting Matrix..." : examStage === 'MCQ' ? "Finish & Proceed to Coding" : "Submit Final Assessment"}
+               </Button>
+               {examStage === 'CODING' && timeLeft > (settings?.examDuration * 30) && (
+                  <span className="text-[10px] font-bold text-destructive/70 uppercase tracking-widest animate-pulse">
+                     Final submission unlocks in {formatTime(timeLeft - (settings?.examDuration * 30))}
+                  </span>
+               )}
+             </div>
           ) : (
-            <Button size="lg" onClick={() => setCurrentQuestionIndex(Math.min(questions.length - 1, currentQuestionIndex + 1))} className="px-10 h-12 shadow-lg shadow-primary/10">
+            <Button size="lg" onClick={() => setCurrentQuestionIndex(Math.min(stageQuestions.length - 1, currentQuestionIndex + 1))} className="px-10 h-12 shadow-lg shadow-primary/10">
               Next Stage <ChevronRight className="h-5 w-5 ml-2" />
             </Button>
           )}

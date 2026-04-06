@@ -2,10 +2,15 @@ import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/mongodb";
 import Question from "@/models/Question";
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     await connectToDatabase();
-    const questions = await Question.find({}).sort({ updatedAt: -1 });
+    const { searchParams } = new URL(req.url);
+    const driveId = searchParams.get("driveId");
+    
+    const query = driveId ? { driveId } : {};
+    const questions = await Question.find(query).sort({ updatedAt: -1 });
+    
     return NextResponse.json({ success: true, questions });
   } catch (error: any) {
     console.error("Fetch Error:", error);

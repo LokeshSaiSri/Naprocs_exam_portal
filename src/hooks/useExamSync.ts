@@ -5,6 +5,7 @@ export function useExamSync(candidateId: string, sessionId: string) {
   const [settings, setSettings] = useState<any>(null);
   const [responses, setResponses] = useState<Record<string, any>>({});
   const [internalSessionId, setInternalSessionId] = useState<string | null>(null);
+  const [examStage, setExamStage] = useState<'MCQ' | 'CODING'>('MCQ');
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
 
@@ -26,6 +27,7 @@ export function useExamSync(candidateId: string, sessionId: string) {
            setQuestions(data.questions);
            if (data.settings) setSettings(data.settings);
            if (data.sessionId) setInternalSessionId(data.sessionId);
+           if (data.currentStage) setExamStage(data.currentStage);
            if (data.existingResponses) setResponses(data.existingResponses);
         }
       } catch (e) {
@@ -81,6 +83,8 @@ export function useExamSync(candidateId: string, sessionId: string) {
     questions, 
     settings, 
     responses, 
+    examStage,
+    setExamStage,
     updateResponse, 
     manualSync, 
     isSyncing, 

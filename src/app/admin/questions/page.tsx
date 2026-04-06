@@ -91,9 +91,10 @@ export default function AdvancedQuestionBank() {
   });
 
   const fetchLibrary = async () => {
+    if (!selectedDriveId) return;
     setIsLoadingLibrary(true);
     try {
-      const res = await fetch('/api/admin/questions');
+      const res = await fetch(`/api/admin/questions?driveId=${selectedDriveId}`);
       const data = await res.json();
       if (data.success) setQuestions(data.questions);
     } catch (e) {
@@ -153,8 +154,16 @@ export default function AdvancedQuestionBank() {
     if (q.type === 'MCQ') {
       const mappedOptions = q.options.map((val: string, i: number) => ({ id: `opt-${i+1}`, value: val }));
       setMcqOptions(mappedOptions);
+      
       // find index of correct answer in original options
-      const correctIdx = q.options.indexOf(q.correctAnswer);
+      let correctIdx = q.options.findIndex((opt: string) => opt === q.correctAnswer);
+      
+      // Fallback for legacy data where correctAnswer might be a numeric index string
+      if (correctIdx === -1 && !isNaN(Number(q.correctAnswer))) {
+         const idx = Number(q.correctAnswer);
+         if (idx >= 0 && idx < q.options.length) correctIdx = idx;
+      }
+      
       setCorrectOption(`opt-${correctIdx >= 0 ? correctIdx + 1 : 1}`);
     } else {
       setCodeBoilerplate(q.boilerplateCode || "");
@@ -292,6 +301,7 @@ export default function AdvancedQuestionBank() {
   };
 
   const CSV_TEMPLATE = `title,content,options,correctAnswer
+# Note: correctAnswer can be a 0-based index or the exact option text
 "Basic React Hook","What is the primary use of the useState hook?","[""State Management"", ""Side Effects"", ""DOM Manipulation""]",0
 "Javascript Scoping","Which keyword is used to declare a block-scoped variable?","[""var"", ""let"", ""const"", ""block""]",1`;
 
@@ -364,6 +374,16 @@ export default function AdvancedQuestionBank() {
                 q[h] = val;
              }
           });
+
+          // Post-process correctAnswer for MCQ: Mapping index to text
+          if (q.type === 'MCQ' && Array.isArray(q.options) && q.options.length > 0) {
+             const maybeIndex = parseInt(q.correctAnswer);
+             // Verify if it's a valid numerical index
+             if (!isNaN(maybeIndex) && maybeIndex >= 0 && maybeIndex < q.options.length) {
+                q.correctAnswer = q.options[maybeIndex];
+             }
+          }
+
           return q;
         });
 

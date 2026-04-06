@@ -12,7 +12,8 @@ import {
   Briefcase,
   Database,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  ShieldAlert
 } from "lucide-react";
 import { format, differenceInDays, addDays, startOfDay, isWithinInterval, parseISO } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
@@ -33,6 +34,9 @@ interface Drive {
   regEnd: string;
   examStart: string;
   examEnd: string;
+  examDuration: number;
+  proctoringSeverity: 'LOW' | 'MEDIUM' | 'HIGH';
+  maxCheatWarnings: number;
   mcqCount: number;
   codingCount: number;
 }
@@ -47,22 +51,24 @@ interface AppSettings {
 /**
  * Visual Gantt-style Timeline for a single drive
  */
-const DriveTimeline = ({ drive, rangeStart, totalDays }: { drive: Drive, rangeStart: Date, totalDays: number }) => {
-  const regStart = parseISO(drive.regStart);
-  const regEnd = parseISO(drive.regEnd);
-  const examStart = parseISO(drive.examStart);
-  const examEnd = parseISO(drive.examEnd);
+const DriveTimeline = ({ drive, rangeStart, totalMs }: { drive: Drive, rangeStart: Date, totalMs: number }) => {
+  const regStart = new Date(drive.regStart);
+  const regEnd = new Date(drive.regEnd);
+  const examStart = new Date(drive.examStart);
+  const examEnd = new Date(drive.examEnd);
 
   const getPos = (date: Date) => {
-    const diff = differenceInDays(date, rangeStart);
-    return (diff / totalDays) * 100;
+    const diff = date.getTime() - rangeStart.getTime();
+    return (diff / totalMs) * 100;
   };
 
   const regLeft = Math.max(0, getPos(regStart));
-  const regWidth = Math.max(2, getPos(regEnd) - regLeft);
+  const regRight = getPos(regEnd);
+  const regWidth = Math.max(0.5, regRight - regLeft); // Minimum width for visibility
   
   const examLeft = Math.max(0, getPos(examStart));
-  const examWidth = Math.max(2, getPos(examEnd) - examLeft);
+  const examRight = getPos(examEnd);
+  const examWidth = Math.max(0.5, examRight - examLeft);
 
   return (
     <div className="relative h-6 w-full bg-muted/20 rounded-full overflow-hidden border border-border/40 group">
@@ -100,16 +106,17 @@ export default function MasterSchedulePage() {
   // Timeline Range Logic
   const timelineRange = useMemo(() => {
     const start = startOfDay(addDays(mountedAt, -2));
-    const end = addDays(start, 32); 
+    const end = addDays(start, 35); // 5 weeks total
+    const totalMs = end.getTime() - start.getTime();
     const days = differenceInDays(end, start);
     
     // Generate scale markers
     const markers = [];
-    for(let i=0; i<days; i+=7) {
+    for(let i=0; i<=days; i+=7) {
       markers.push(addDays(start, i));
     }
     
-    return { start, end, days, markers };
+    return { start, end, days, totalMs, markers };
   }, [mountedAt]);
 
   useEffect(() => {
@@ -137,7 +144,23 @@ export default function MasterSchedulePage() {
   };
 
   const updateDriveField = (id: string, field: keyof Drive, value: any) => {
-    setDrives(prev => prev.map(d => d._id === id ? { ...d, [field]: value } : d));
+    setDrives(prev => prev.map(d => {
+      if (d._id !== id) return d;
+      
+      const newDrive = { ...d, [field]: value };
+      
+      // Auto-calculate duration if timing changes
+      if (field === 'examStart' || field === 'examEnd') {
+         const start = new Date(newDrive.examStart);
+         const end = new Date(newDrive.examEnd);
+         if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
+            const diffMs = end.getTime() - start.getTime();
+            newDrive.examDuration = Math.max(0, Math.floor(diffMs / (1000 * 60)));
+         }
+      }
+      
+      return newDrive;
+    }));
     setModifiedIds(prev => new Set(prev).add(id));
   };
 
@@ -282,17 +305,17 @@ export default function MasterSchedulePage() {
                           {drive.title}
                         </div>
                         <div className="col-span-9">
-                          <DriveTimeline drive={drive} rangeStart={timelineRange.start} totalDays={timelineRange.days} />
+                          <DriveTimeline drive={drive} rangeStart={timelineRange.start} totalMs={timelineRange.totalMs} />
                         </div>
                       </div>
                     ))}
                  </div>
                  
                  {/* Current Date Vertical Indicator */}
-                 <div 
-                   className="absolute top-0 bottom-0 w-[2px] bg-primary/20 pointer-events-none z-10"
-                   style={{ left: `${(differenceInDays(mountedAt, timelineRange.start) / timelineRange.days) * 100}%` }}
-                 >
+                  <div 
+                    className="absolute top-0 bottom-0 w-[2.5px] bg-primary/40 pointer-events-none z-10 shadow-[0_0_10px_rgba(var(--primary),0.5)]"
+                    style={{ left: `${((new Date().getTime() - timelineRange.start.getTime()) / timelineRange.totalMs) * 100}%` }}
+                  >
                     <div className="bg-primary text-[8px] font-bold text-white px-1.5 py-0.5 rounded-full absolute -top-1 left-1/2 -translate-x-1/2 shadow-lg">NOW</div>
                  </div>
               </div>
@@ -321,6 +344,8 @@ export default function MasterSchedulePage() {
                         <th className="px-6 py-4">Drive Instance</th>
                         <th className="px-6 py-4">Registration Window (IST)</th>
                         <th className="px-6 py-4">Assessment Window (IST)</th>
+                        <th className="px-6 py-4">Duration</th>
+                        <th className="px-6 py-4">Security Governance</th>
                         <th className="px-6 py-4 text-center">Pooling (MCQ/Code)</th>
                         <th className="px-6 py-4">Status</th>
                      </tr>
@@ -338,17 +363,17 @@ export default function MasterSchedulePage() {
                                  <p className="text-[10px] font-mono text-muted-foreground uppercase opacity-60">/{drive.slug}</p>
                               </td>
                               
-                              <td className="px-6 py-4">
+                               <td className="px-6 py-4">
                                  <div className="flex flex-col gap-2">
                                     <Input 
                                        type="datetime-local" 
-                                       value={drive.regStart.slice(0, 16)} 
+                                       value={drive.regStart ? format(new Date(drive.regStart), "yyyy-MM-dd'T'HH:mm") : ""} 
                                        onChange={(e) => updateDriveField(drive._id, 'regStart', e.target.value)}
                                        className="h-9 text-[11px] bg-background/50 border-border/40 font-mono w-[180px]"
                                     />
                                     <Input 
                                        type="datetime-local" 
-                                       value={drive.regEnd.slice(0, 16)} 
+                                       value={drive.regEnd ? format(new Date(drive.regEnd), "yyyy-MM-dd'T'HH:mm") : ""} 
                                        onChange={(e) => updateDriveField(drive._id, 'regEnd', e.target.value)}
                                        className="h-9 text-[11px] bg-background/50 border-border/40 font-mono w-[180px]"
                                     />
@@ -359,18 +384,50 @@ export default function MasterSchedulePage() {
                                  <div className="flex flex-col gap-2">
                                     <Input 
                                        type="datetime-local" 
-                                       value={drive.examStart.slice(0, 16)} 
+                                       value={drive.examStart ? format(new Date(drive.examStart), "yyyy-MM-dd'T'HH:mm") : ""} 
                                        onChange={(e) => updateDriveField(drive._id, 'examStart', e.target.value)}
                                        className="h-9 text-[11px] bg-indigo-500/5 border-indigo-500/20 font-mono w-[180px]"
                                     />
                                     <Input 
                                        type="datetime-local" 
-                                       value={drive.examEnd.slice(0, 16)} 
+                                       value={drive.examEnd ? format(new Date(drive.examEnd), "yyyy-MM-dd'T'HH:mm") : ""} 
                                        onChange={(e) => updateDriveField(drive._id, 'examEnd', e.target.value)}
                                        className="h-9 text-[11px] bg-indigo-500/5 border-indigo-500/20 font-mono w-[180px]"
                                     />
                                  </div>
                               </td>
+
+                               <td className="px-6 py-4">
+                                  <div className="flex flex-col gap-2 w-[120px]">
+                                     <div className="flex bg-muted/20 rounded-lg p-0.5 border border-border/40">
+                                        {['LOW', 'MED', 'HIGH'].map((s) => {
+                                           const fullS = s === 'MED' ? 'MEDIUM' : s;
+                                           const active = drive.proctoringSeverity === fullS;
+                                           return (
+                                              <button 
+                                                key={s}
+                                                onClick={() => updateDriveField(drive._id, 'proctoringSeverity', fullS)}
+                                                className={`flex-1 text-[8px] font-bold py-1 rounded-md transition-all ${active ? 'bg-destructive text-white shadow-lg' : 'text-muted-foreground hover:bg-muted'}`}
+                                              >
+                                                 {s}
+                                              </button>
+                                           );
+                                        })}
+                                     </div>
+                                     <div className="flex items-center gap-2">
+                                        <div className="relative flex-1">
+                                           <Input 
+                                              type="number" 
+                                              value={drive.maxCheatWarnings} 
+                                              onChange={(e) => updateDriveField(drive._id, 'maxCheatWarnings', parseInt(e.target.value))}
+                                              className="h-8 text-[10px] font-bold bg-background/50 border-destructive/20 text-destructive text-center pr-6"
+                                           />
+                                           <ShieldAlert className="h-3 w-3 text-destructive/40 absolute right-2 top-1/2 -translate-y-1/2" />
+                                        </div>
+                                        <span className="text-[8px] font-bold text-muted-foreground uppercase">Warns</span>
+                                     </div>
+                                  </div>
+                               </td>
 
                               <td className="px-6 py-4">
                                  <div className="flex items-center justify-center gap-3">

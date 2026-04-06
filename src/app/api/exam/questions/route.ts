@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import mongoose from "mongoose";
 import connectToDatabase from "@/lib/mongodb";
 import Question from "@/models/Question";
 import ExamSession from "@/models/ExamSession";
@@ -34,15 +35,24 @@ export async function GET(req: Request) {
     let questionsToDeliver: any[] = [];
 
     if (!session) {
+      // 2.1 Get Global Defaults for Fallback
+      let globalSettings = await mongoose.model('Settings').findOne({});
+      
+      const mcqCount = drive.mcqCount || globalSettings?.mcqCount || 15;
+      const codingCount = drive.codingCount || globalSettings?.codingCount || 2;
+
       // PERFORM RANDOM POOLING (First time session initialization)
+      // Explicitly convert drive._id to ObjectId for aggregate $match
+      const targetDriveObjectId = new mongoose.Types.ObjectId(drive._id as string);
+
       const poolMcqs = await Question.aggregate([
-        { $match: { driveId: drive._id, type: 'MCQ' } },
-        { $sample: { size: drive.mcqCount || 15 } }
+        { $match: { driveId: targetDriveObjectId, type: 'MCQ' } },
+        { $sample: { size: mcqCount } }
       ]);
       
       const poolCoding = await Question.aggregate([
-        { $match: { driveId: drive._id, type: 'CODING' } },
-        { $sample: { size: drive.codingCount || 2 } }
+        { $match: { driveId: targetDriveObjectId, type: 'CODING' } },
+        { $sample: { size: codingCount } }
       ]);
 
       questionsToDeliver = [...poolMcqs, ...poolCoding];
@@ -57,7 +67,6 @@ export async function GET(req: Request) {
       });
     } else {
       // RESUME: Fetch the exact questions already picked for this student
-      // @ts-ignore (We will add questionIds to ExamSession model next)
       const pickedIds = session.questionIds || [];
       if (pickedIds.length > 0) {
         questionsToDeliver = await Question.find({ _id: { $in: pickedIds } });
@@ -98,11 +107,24 @@ export async function GET(req: Request) {
       return safeQuestion;
     });
 
+    // 4. Resolve Settings Hierarchy: Drive > Global Defaults
+    let globalSettings = await mongoose.model('Settings').findOne({});
+    const driveObj = drive.toObject ? drive.toObject() : drive;
+
+    // Merge logic: If drive has these proctoring fields, they override global. 
+    // Otherwise fallback to global or model defaults.
+    const resolvedSettings = {
+       ...driveObj,
+       maxCheatWarnings: drive.maxCheatWarnings ?? globalSettings?.maxCheatWarnings ?? 3,
+       proctoringSeverity: drive.proctoringSeverity ?? globalSettings?.proctoringSensitivity ?? 'MEDIUM'
+    };
+
     return NextResponse.json({ 
       success: true, 
       questions: sanitizedQuestions, 
-      settings: drive, // Mapping Drive to settings key for frontend compatibility
+      settings: resolvedSettings, // Return merged settings for frontend consumption
       sessionId: session._id,
+      currentStage: session.currentStage || 'MCQ',
       existingResponses: session.responses || {}
     }, { status: 200 });
     

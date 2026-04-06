@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect } from "react";
 import { 
   Plus, Briefcase, Calendar, Clock, ShieldCheck, Trash2, ArrowRight, ExternalLink, Link as LinkIcon, AlertTriangle, CheckCircle2 
@@ -349,13 +350,17 @@ export default function DrivesManagement() {
                   </CardContent>
 
                   <CardFooter className="pt-2 pb-6 flex gap-3">
-                     <Button variant="outline" className="flex-1 h-10 border-border/60 hover:bg-muted/50 gap-2 relative overflow-hidden transition-all group">
-                        <Plus className="h-3.5 w-3.5" /> Questioning
-                        <div className="absolute inset-0 bg-primary/10 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                     </Button>
-                     <Button className="flex-1 h-10 gap-2 font-semibold shadow-lg shadow-primary/20">
-                        View Matrix <ArrowRight className="h-3.5 w-3.5" />
-                     </Button>
+                     <Link href={`/admin/questions?driveId=${drive._id}`} className="flex-1">
+                        <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2 relative overflow-hidden transition-all group">
+                           <Plus className="h-3.5 w-3.5" /> Questioning
+                           <div className="absolute inset-0 bg-primary/10 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                        </Button>
+                     </Link>
+                     <Link href="/admin/settings" className="flex-1">
+                        <Button className="w-full h-10 gap-2 font-semibold shadow-lg shadow-primary/20">
+                           View Matrix <ArrowRight className="h-3.5 w-3.5" />
+                        </Button>
+                     </Link>
                   </CardFooter>
                 </Card>
               </motion.div>
