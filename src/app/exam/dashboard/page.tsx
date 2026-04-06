@@ -226,14 +226,14 @@ export default function ExamDashboard() {
 
     try {
       const studentCode = responses[currentQ._id]?.codeStr || currentQ.boilerplateCode || "";
-      const publicCases = (currentQ.testCases || []).filter((tc: any) => !tc.isHidden);
-      
-      const wrappedCode = generateWrappedCode(studentCode, publicCases);
       
       const res = await fetch("/api/exam/evaluate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wrappedCode })
+        body: JSON.stringify({ 
+          studentCode, 
+          questionId: currentQ._id 
+        })
       });
 
       const data = await res.json();
@@ -241,6 +241,12 @@ export default function ExamDashboard() {
         setTestResults(data.results);
       } else {
         console.error(data.message || "Evaluation Fault");
+        // Convert global faults into a UI-friendly error for the first result index
+        setTestResults([{ 
+          index: 0, 
+          error: data.message || "Execution Fault", 
+          verdict: data.verdict 
+        }]);
       }
     } catch (e) {
        console.error("Network Latency Fault");
@@ -269,18 +275,19 @@ export default function ExamDashboard() {
         if (q.type === 'CODING' && finalEvaluatedResponses[q._id]) {
           try {
             const studentCode = finalEvaluatedResponses[q._id].codeStr || q.boilerplateCode || "";
-            const wrappedCode = generateWrappedCode(studentCode, q.testCases || []);
             
             const res = await fetch("/api/exam/evaluate", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ wrappedCode })
+              body: JSON.stringify({ 
+                studentCode, 
+                questionId: q._id 
+              })
             });
 
             const evalData = await res.json();
             
             if (!evalData.success) {
-               // Handle CE/TLE/RE Global states
                finalEvaluatedResponses[q._id] = {
                   ...finalEvaluatedResponses[q._id],
                   testsPassed: 0,
@@ -291,22 +298,18 @@ export default function ExamDashboard() {
                continue;
             }
 
-            // Calculate Partial Weighted Score
+            // The server now handles the passed count logic
+            const results = evalData.results;
             let passedCount = 0;
             let passedWeight = 0;
             let totalWeight = 0;
 
-            const results = evalData.results;
             (q.testCases || []).forEach((tc: any, idx: number) => {
                const r = results.find((res: any) => res.index === idx);
                const w = tc.weight || 1;
                totalWeight += w;
 
-               // Comparison Logic (Trimmed Normalized Strings)
-               const actualNorm = (r?.actual || "").toLowerCase().trim();
-               const expectedNorm = (tc.expectedOutput || "").toLowerCase().trim();
-
-               if (actualNorm === expectedNorm && !r?.error) {
+               if (r?.passed) {
                   passedCount++;
                   passedWeight += w;
                }
@@ -314,7 +317,6 @@ export default function ExamDashboard() {
 
             const weightedScore = totalWeight > 0 ? (passedWeight / totalWeight) * 100 : 0;
             
-            // HackerRank Rule: Only preserve higher scores
             const currentRecord = responses[q._id];
             const previousBest = currentRecord.score || 0;
 
@@ -323,7 +325,7 @@ export default function ExamDashboard() {
               testsPassed: passedCount,
               totalTests: (q.testCases || []).length,
               score: Math.max(previousBest, Math.round(weightedScore)),
-              results: results // Store for summary
+              results: results 
             };
 
           } catch (e) {
@@ -746,24 +748,14 @@ export default function ExamDashboard() {
                     </div>
                     <div className="space-y-0.5">
                       <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest opacity-60">
-                         {testResults.length > (currentQ.testCases || []).filter((tc: any) => !tc.isHidden).length ? 'Complete Submission Diagnostics' : 'Public Logic Verification'}
+                         {testResults.some(r => r.isHidden) ? 'Complete Submission Diagnostics' : 'Public Logic Verification'}
                       </p>
                       <p className="text-lg font-bold tracking-tight">
-                         Successfully Satistfied {testResults.filter((r: any) => {
-                            const tc = currentQ.testCases[r.index];
-                            const expectedNorm = (tc?.expectedOutput || "").toLowerCase().trim();
-                            const actualNorm = (r?.actual || "").toLowerCase().trim();
-                            return actualNorm === expectedNorm && !r.error;
-                         }).length} of {testResults.length} Guards
+                         Successfully Satisfied {testResults.filter(r => r.passed).length} of {testResults.length} Guards
                       </p>
                     </div>
                     <div className="ml-auto text-3xl font-black italic opacity-10">
-                       {Math.round((testResults.filter((r: any) => {
-                            const tc = currentQ.testCases[r.index];
-                            const expectedNorm = (tc?.expectedOutput || "").toLowerCase().trim();
-                            const actualNorm = (r?.actual || "").toLowerCase().trim();
-                            return actualNorm === expectedNorm && !r.error;
-                         }).length / testResults.length) * 100)}%
+                       {Math.round((testResults.filter(r => r.passed).length / testResults.length) * 100)}%
                     </div>
                   </div>
                 )}
@@ -774,9 +766,7 @@ export default function ExamDashboard() {
                       // Skip hidden ones ONLY if we don't have a result for them (during "Run Code")
                       if (tc.isHidden && !result) return null;
 
-                      const expectedNorm = (tc.expectedOutput || "").trim();
-                      const actualNorm = (result?.actual || "").trim();
-                      const isCorrect = result && !result.error && (actualNorm.toLowerCase() === expectedNorm.toLowerCase());
+                      const isCorrect = result?.passed;
                       
                       return (
                         <div key={originalIdx} className={`p-4 rounded-xl border transition-all ${result ? (isCorrect ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-destructive/30 bg-destructive/5') : 'border-border/30 bg-card/40'}`}>

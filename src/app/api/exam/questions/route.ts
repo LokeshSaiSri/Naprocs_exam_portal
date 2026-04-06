@@ -120,11 +120,10 @@ export async function GET(req: Request) {
       if (safeQuestion.type === 'CODING' && Array.isArray(safeQuestion.testCases)) {
         safeQuestion.testCases = safeQuestion.testCases.map((tc: any) => {
           if (tc.isHidden) {
-            const hash = crypto.createHash('sha256').update(tc.expectedOutput).digest('hex');
             return {
               ...tc,
               _id: tc._id ? tc._id.toString() : undefined,
-              expectedOutput: hash 
+              expectedOutput: "[ PRIVATE TEST CASE ]" 
             };
           }
           return {
