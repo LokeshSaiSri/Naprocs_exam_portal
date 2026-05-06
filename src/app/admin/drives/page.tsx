@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import { 
-  Plus, Briefcase, Calendar, Clock, ShieldCheck, Trash2, ArrowRight, ExternalLink, Link as LinkIcon, AlertTriangle, CheckCircle2 
+  Plus, Briefcase, Calendar, Clock, ShieldCheck, Trash2, ArrowRight, ExternalLink, Link as LinkIcon, AlertTriangle, CheckCircle2, Settings2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
@@ -25,6 +25,7 @@ export default function DrivesManagement() {
   const [isPurging, setIsPurging] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [purgeTarget, setPurgeTarget] = useState<string | null>(null);
+  const [editingDriveId, setEditingDriveId] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -63,34 +64,82 @@ export default function DrivesManagement() {
     fetchDrives();
   }, []);
 
-  const handleCreateDrive = async (e: React.FormEvent) => {
+  const formatForInput = (dateStr: string) => {
+    if (!dateStr) return "";
+    const d = new Date(dateStr);
+    // Adjust for local timezone to match datetime-local expected format
+    const pad = (num: number) => num.toString().padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const handleOpenEdit = (drive: any) => {
+    setEditingDriveId(drive._id);
+    setFormData({
+      title: drive.title,
+      slug: drive.slug,
+      examDuration: drive.examDuration,
+      passingCutoff: drive.passingCutoff,
+      proctoringSeverity: drive.proctoringSeverity,
+      maxCheatWarnings: drive.maxCheatWarnings,
+      mcqCount: drive.mcqCount,
+      codingCount: drive.codingCount,
+      shuffleQuestions: drive.shuffleQuestions,
+      shuffleOptions: drive.shuffleOptions,
+      regStart: formatForInput(drive.regStart),
+      regEnd: formatForInput(drive.regEnd),
+      examStart: formatForInput(drive.examStart),
+      examEnd: formatForInput(drive.examEnd),
+    });
+    setShowCreateDialog(true);
+  };
+
+  const handleOpenCreate = () => {
+    setEditingDriveId(null);
+    setFormData({
+      title: "", slug: "", examDuration: 60, passingCutoff: 70, 
+      proctoringSeverity: "MEDIUM", maxCheatWarnings: 3, 
+      mcqCount: 15, codingCount: 2, shuffleQuestions: true, shuffleOptions: true, 
+      regStart: "", regEnd: "", examStart: "", examEnd: ""
+    });
+    setShowCreateDialog(true);
+  };
+
+  const handleSaveDrive = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Basic Validation: End must be after Start
+    if (new Date(formData.regEnd) <= new Date(formData.regStart)) {
+      alert("Registration Deadline must be after Registration Opening.");
+      return;
+    }
+    if (new Date(formData.examEnd) <= new Date(formData.examStart)) {
+      alert("Exam Close Window must be after Exam Start Window.");
+      return;
+    }
+
     setIsCreating(true);
     try {
-      const res = await fetch("/api/admin/drives", {
-        method: "POST",
+      const url = editingDriveId ? `/api/admin/drives/${editingDriveId}` : "/api/admin/drives";
+      const method = editingDriveId ? "PATCH" : "POST";
+
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...formData,
-          regStart: formData.regStart ? new Date(formData.regStart).toISOString() : "",
-          regEnd: formData.regEnd ? new Date(formData.regEnd).toISOString() : "",
-          examStart: formData.examStart ? new Date(formData.examStart).toISOString() : "",
-          examEnd: formData.examEnd ? new Date(formData.examEnd).toISOString() : ""
+          regStart: new Date(formData.regStart).toISOString(),
+          regEnd: new Date(formData.regEnd).toISOString(),
+          examStart: new Date(formData.examStart).toISOString(),
+          examEnd: new Date(formData.examEnd).toISOString()
         })
       });
+
       if (res.ok) {
         setShowCreateDialog(false);
         fetchDrives();
-        // Reset form
-        setFormData({
-          title: "", slug: "", examDuration: 60, passingCutoff: 70, 
-          proctoringSeverity: "MEDIUM", maxCheatWarnings: 3, 
-          mcqCount: 15, codingCount: 2, shuffleQuestions: true, shuffleOptions: true, 
-          regStart: "", regEnd: "", examStart: "", examEnd: ""
-        });
       }
     } catch (err) {
-      console.error("Creation Fault:", err);
+      console.error("Save Fault:", err);
     } finally {
       setIsCreating(false);
     }
@@ -140,20 +189,23 @@ export default function DrivesManagement() {
         </div>
 
         <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-          <DialogTrigger render={<Button className="bg-primary hover:bg-primary/90 text-primary-foreground h-12 px-6 rounded-xl shadow-xl shadow-primary/20 transition-all hover:scale-[1.02] active:scale-95" />}>
+          <Button 
+            onClick={handleOpenCreate}
+            className="bg-primary hover:bg-primary/90 text-primary-foreground h-12 px-6 rounded-xl shadow-xl shadow-primary/20 transition-all hover:scale-[1.02] active:scale-95"
+          >
               <Plus className="h-5 w-5 mr-2" /> Initialize New Flow
-          </DialogTrigger>
+          </Button>
           <DialogContent className="max-w-2xl bg-card/95 backdrop-blur-xl border-border/40 max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold flex items-center gap-2">
-                <Briefcase className="h-6 w-6 text-primary" /> Create Recruitment Drive
+                <Briefcase className="h-6 w-6 text-primary" /> {editingDriveId ? "Update Pipeline" : "Create Recruitment Drive"}
               </DialogTitle>
               <DialogDescription className="text-base">
                 Configure scheduling, pooling targets, and anti-cheat thresholds.
               </DialogDescription>
             </DialogHeader>
 
-            <form onSubmit={handleCreateDrive} className="space-y-6 pt-4">
+            <form onSubmit={handleSaveDrive} className="space-y-6 pt-4">
               <div className="grid grid-cols-2 gap-6">
                 <div className="space-y-2 col-span-2 md:col-span-1">
                   <Label>Drive Title (Identifier)</Label>
@@ -186,7 +238,7 @@ export default function DrivesManagement() {
                     value={formData.regStart} 
                     onChange={e => setFormData({...formData, regStart: e.target.value})}
                     required
-                    className="bg-input/20 h-10"
+                    className="bg-input/20 h-10 text-xs"
                   />
                 </div>
                 <div className="space-y-2">
@@ -196,7 +248,7 @@ export default function DrivesManagement() {
                     value={formData.regEnd} 
                     onChange={e => setFormData({...formData, regEnd: e.target.value})}
                     required
-                    className="bg-input/20 h-10"
+                    className="bg-input/20 h-10 text-xs"
                   />
                 </div>
                 <div className="space-y-2">
@@ -206,7 +258,7 @@ export default function DrivesManagement() {
                     value={formData.examStart} 
                     onChange={e => setFormData({...formData, examStart: e.target.value})}
                     required
-                    className="bg-input/20 h-10"
+                    className="bg-input/20 h-10 text-xs"
                   />
                 </div>
                 <div className="space-y-2">
@@ -216,7 +268,7 @@ export default function DrivesManagement() {
                     value={formData.examEnd} 
                     onChange={e => setFormData({...formData, examEnd: e.target.value})}
                     required
-                    className="bg-input/20 h-10"
+                    className="bg-input/20 h-10 text-xs"
                   />
                 </div>
               </div>
@@ -257,8 +309,8 @@ export default function DrivesManagement() {
 
               <DialogFooter className="pt-4 border-t border-border/40">
                 <Button variant="outline" type="button" onClick={() => setShowCreateDialog(false)} className="h-11 border-border/50">Cancel</Button>
-                <Button type="submit" disabled={isCreating} className="h-11 px-8 animate-pulse-slow">
-                  {isCreating ? "Initializing Flow..." : "Acknowledge & Deploy"}
+                <Button type="submit" disabled={isCreating} className="h-11 px-8">
+                  {isCreating ? "Saving Changes..." : editingDriveId ? "Update Pipeline" : "Acknowledge & Deploy"}
                 </Button>
               </DialogFooter>
             </form>
@@ -290,7 +342,18 @@ export default function DrivesManagement() {
                        <Badge variant="outline" className={`px-3 py-1 rounded-full font-bold uppercase tracking-tighter text-[9px] ${getStatusColor(drive.regStart, drive.regEnd)}`}>
                          {getStatusText(drive.regStart, drive.regEnd)}
                        </Badge>
-                       <div className="flex gap-2">
+                       <div className="flex gap-1">
+                         <TooltipProvider>
+                           <Tooltip>
+                             <TooltipTrigger>
+                                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary hover:bg-primary/10" onClick={() => handleOpenEdit(drive)}>
+                                   <Settings2 className="h-4 w-4" />
+                                </Button>
+                             </TooltipTrigger>
+                             <TooltipContent side="top" className="text-xs">Configure Pipeline</TooltipContent>
+                           </Tooltip>
+                         </TooltipProvider>
+
                          <TooltipProvider>
                            <Tooltip>
                              <TooltipTrigger>
@@ -301,7 +364,7 @@ export default function DrivesManagement() {
                                    <LinkIcon className="h-4 w-4" />
                                 </Button>
                              </TooltipTrigger>
-                             <TooltipContent side="top" className="text-xs">Copy Registration Link</TooltipContent>
+                             <TooltipContent side="top" className="text-xs">Copy Reg Link</TooltipContent>
                            </Tooltip>
                          </TooltipProvider>
 
@@ -312,7 +375,7 @@ export default function DrivesManagement() {
                                    <Trash2 className="h-4 w-4" />
                                 </Button>
                              </TooltipTrigger>
-                             <TooltipContent side="top" className="text-xs">Purge All Drive Content</TooltipContent>
+                             <TooltipContent side="top" className="text-xs">Purge Data</TooltipContent>
                            </Tooltip>
                          </TooltipProvider>
                        </div>
@@ -322,24 +385,29 @@ export default function DrivesManagement() {
                   </CardHeader>
 
                   <CardContent className="flex-grow space-y-5">
-                    <div className="space-y-3">
-                       <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/40 pb-2">
-                          <span className="flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5" /> Lifecycle</span>
-                          <span className="text-foreground">IST</span>
-                       </div>
-                       <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-1">
-                             <p className="text-[10px] text-muted-foreground font-bold uppercase">Registration Opens</p>
-                             <p className="text-xs font-medium">{format(new Date(drive.regStart), "MMM d, HH:mm")}</p>
+                    <div className="space-y-4">
+                       {/* Registration Window */}
+                       <div className="space-y-1.5 bg-muted/20 p-3 rounded-xl border border-border/40">
+                          <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest flex items-center gap-1.5"><Calendar className="h-3 w-3" /> Registration Window</p>
+                          <div className="flex justify-between items-center text-xs">
+                             <span className="font-medium">{format(new Date(drive.regStart), "MMM d, HH:mm")}</span>
+                             <ArrowRight className="h-3 w-3 text-muted-foreground/50" />
+                             <span className="font-medium text-destructive/80">{format(new Date(drive.regEnd), "MMM d, HH:mm")}</span>
                           </div>
-                          <div className="space-y-1 text-right">
-                             <p className="text-[10px] text-muted-foreground font-bold uppercase">Exam Starts</p>
-                             <p className="text-xs font-medium">{format(new Date(drive.examStart), "MMM d, HH:mm")}</p>
+                       </div>
+
+                       {/* Exam Window */}
+                       <div className="space-y-1.5 bg-primary/5 p-3 rounded-xl border border-primary/20">
+                          <p className="text-[10px] text-primary/80 font-bold uppercase tracking-widest flex items-center gap-1.5"><Clock className="h-3 w-3" /> Examination Window</p>
+                          <div className="flex justify-between items-center text-xs">
+                             <span className="font-medium">{format(new Date(drive.examStart), "MMM d, HH:mm")}</span>
+                             <ArrowRight className="h-3 w-3 text-primary/30" />
+                             <span className="font-medium text-primary">{format(new Date(drive.examEnd), "MMM d, HH:mm")}</span>
                           </div>
                        </div>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-3 gap-2 pt-2">
                         <div className="bg-muted/30 p-2.5 rounded-xl border border-border/40 text-center space-y-0.5">
                            <p className="text-[9px] font-bold text-muted-foreground uppercase">MCQs</p>
                            <p className="text-sm font-bold text-primary">{drive.mcqCount}</p>
@@ -349,7 +417,7 @@ export default function DrivesManagement() {
                            <p className="text-sm font-bold text-accent">{drive.codingCount}</p>
                         </div>
                         <div className="bg-muted/30 p-2.5 rounded-xl border border-border/40 text-center space-y-0.5">
-                           <p className="text-[9px] font-bold text-muted-foreground uppercase">Proct-Lvl</p>
+                           <p className="text-[9px] font-bold text-muted-foreground uppercase">Severity</p>
                            <p className="text-[10px] font-bold text-foreground">{drive.proctoringSeverity}</p>
                         </div>
                     </div>
@@ -357,14 +425,14 @@ export default function DrivesManagement() {
 
                   <CardFooter className="pt-2 pb-6 flex gap-3">
                      <Link href={`/admin/questions?driveId=${drive._id}`} className="flex-1">
-                        <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2 relative overflow-hidden transition-all group">
-                           <Plus className="h-3.5 w-3.5" /> Questioning
+                        <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2 relative overflow-hidden transition-all group shadow-sm">
+                           <Plus className="h-3.5 w-3.5" /> Bank
                            <div className="absolute inset-0 bg-primary/10 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
                         </Button>
                      </Link>
-                     <Link href="/admin/settings" className="flex-1">
-                        <Button className="w-full h-10 gap-2 font-semibold shadow-lg shadow-primary/20">
-                           View Matrix <ArrowRight className="h-3.5 w-3.5" />
+                     <Link href={`/admin/leaderboard?driveId=${drive._id}`} className="flex-1">
+                        <Button className="w-full h-10 gap-2 font-semibold shadow-lg shadow-primary/20 bg-primary">
+                           Results <ArrowRight className="h-3.5 w-3.5" />
                         </Button>
                      </Link>
                   </CardFooter>
@@ -400,3 +468,4 @@ export default function DrivesManagement() {
     </div>
   );
 }
+
