@@ -26,10 +26,10 @@ interface ExamState {
   isAuthenticated: boolean;
   questions: Question[];
   currentQuestionIndex: number;
-  answers: Record<string, any>; 
+  answers: Record<string, any>;
   isFullscreen: boolean;
   cheatWarnings: number;
-  
+
   // Actions
   login: (candidate: Candidate) => void;
   logout: () => void;
@@ -53,18 +53,18 @@ export const useExamStore = create<ExamState>((set) => ({
     set({ candidate, isAuthenticated: true });
   },
 
-  logout: () => set({ 
-    candidate: null, 
-    isAuthenticated: false, 
-    answers: {}, 
-    currentQuestionIndex: 0, 
+  logout: () => set({
+    candidate: null,
+    isAuthenticated: false,
+    answers: {},
+    currentQuestionIndex: 0,
     cheatWarnings: 0,
     questions: []
   }),
-  
+
   setQuestions: (questions) => set({ questions }),
   setCurrentQuestionIndex: (index) => set({ currentQuestionIndex: index }),
-  setAnswer: (questionId, answer) => 
+  setAnswer: (questionId, answer) =>
     set((state) => ({
       answers: { ...state.answers, [questionId]: answer }
     })),

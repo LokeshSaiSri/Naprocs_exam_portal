@@ -135,11 +135,19 @@ export default function ExamDashboard() {
     };
   }, [incrementCheatWarning, settings, isSubmitted, isTerminated]);
 
-  // Timer
+  // Timer Implementation with Auto-Submit Watchdog
   useEffect(() => {
     const timer = setInterval(() => setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0)), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    // When time hits 0 and timer was fully initialized, trigger auto-submit
+    if (timerInitialized && timeLeft === 0 && !isSubmitted && !isSubmitting) {
+       console.warn("DUE DATE REACHED: Initiating Auto-Submission sequence...");
+       handleViolationSubmit("Time Expired");
+    }
+  }, [timeLeft, timerInitialized, isSubmitted, isSubmitting]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60).toString().padStart(2, "0");

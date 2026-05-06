@@ -315,6 +315,12 @@ export default function AdvancedQuestionBank() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedDriveId) {
+      alert("Please select a Target Drive from the dropdown before uploading.");
+      e.target.value = ""; // Reset file input
+      return;
+    }
+
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -325,6 +331,12 @@ export default function AdvancedQuestionBank() {
         const text = event.target?.result as string;
         // Handle both CRLF and LF line endings
         const lines = text.split(/\r?\n/).filter(line => line.trim());
+        if (lines.length < 2) {
+          alert("CSV file appears to be empty or missing headers.");
+          setIsUploading(false);
+          return;
+        }
+
         const headers = lines[0].split(',').map(h => h.trim());
 
         // Robust CSV parser that handles quoted cells and escaped quotes ("")
@@ -393,13 +405,19 @@ export default function AdvancedQuestionBank() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ questions })
         });
+
+        const data = await response.json();
+
         if (response.ok) {
           setUploadSuccess(true);
           fetchLibrary(); // Auto-sync library after bulk import
           setTimeout(() => setUploadSuccess(false), 5000);
+        } else {
+          alert(`Upload Failed: ${data.error}${data.details ? `\n\n${data.details.join('\n')}` : ''}`);
         }
       } catch (err) {
         console.error("Bulk Commit Fault");
+        alert("A network error occurred while committing questions. Please try again.");
       } finally {
         setIsUploading(false);
       }

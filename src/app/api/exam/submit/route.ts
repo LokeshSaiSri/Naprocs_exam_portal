@@ -15,6 +15,28 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing identity constraints" }, { status: 400 });
     }
 
+    // 0. Hard Time Limit Enforcement (Server-Side Safety)
+    const [candidateDoc, drive] = await Promise.all([
+       Candidate.findById(candidateId).lean() as any,
+       null // Placeholder for drive fetching after candidate is found
+    ]);
+
+    if (!candidateDoc) {
+       return NextResponse.json({ error: "Candidate identity mismatch" }, { status: 401 });
+    }
+
+    const driveDoc = await (await import("@/models/Drive")).default.findById(candidateDoc.driveId).lean() as any;
+    if (driveDoc && driveDoc.examEnd) {
+       const now = new Date();
+       const cutoff = new Date(new Date(driveDoc.examEnd).getTime() + 120000); // 2 minute network grace period
+       if (now > cutoff) {
+          return NextResponse.json({ 
+             error: "Assessment window strictly expired.",
+             details: "The global cutoff time for this drive has passed. Contact your administrator."
+          }, { status: 403 });
+       }
+    }
+
     // 1. Handle Stage Transition (MCQ -> CODING)
     if (stageAction === 'MCQ_SUBMIT') {
        const session = await ExamSession.findByIdAndUpdate(
@@ -106,9 +128,15 @@ export async function POST(req: Request) {
                       if (global.STDOUT.length === 0 && entry && typeof eval(entry) === 'function') {
                          let args = [];
                          const rawInput = (tc.input || "").trim();
-                         if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
-                           args = [JSON.parse(rawInput)];
-                         } else {
+                         
+                         // Robust Input Dispatch: Try JSON, fallback to comma-split
+                         try {
+                           if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
+                             args = [JSON.parse(rawInput)];
+                           } else {
+                             throw new Error("Force comma split");
+                           }
+                         } catch(e) {
                            args = rawInput.split(',').map(v => {
                               const s = v.trim();
                               if (!isNaN(s) && s !== "" && !s.startsWith("0b") && !s.startsWith("0x")) return Number(s);
@@ -117,6 +145,7 @@ export async function POST(req: Request) {
                               return s;
                            });
                          }
+
                          let retValue = eval(entry)(...args);
                          if (retValue !== undefined) {
                             if (Array.isArray(retValue) || (retValue !== null && typeof retValue === 'object')) {
@@ -144,7 +173,7 @@ export async function POST(req: Request) {
              require: (id: string) => {
                 if (id === 'fs') {
                    return {
-                      readFileSync: (fd: any) => {
+                      readFileSync: (fd: any, encoding?: string) => {
                          if (fd === 0 || fd === '/dev/stdin') return sandbox.STDIN_CONTENT;
                          throw new Error("FS restricted");
                       }
@@ -155,7 +184,10 @@ export async function POST(req: Request) {
              console: {
                 log: (...args: any[]) => {
                    sandbox.STDOUT.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
-                }
+                },
+                info: (...args: any[]) => sandbox.console.log(...args),
+                error: (...args: any[]) => sandbox.console.log(...args),
+                warn: (...args: any[]) => sandbox.console.log(...args),
              },
              process: {
                 stdout: { write: (s: string) => sandbox.STDOUT.push(s) }
@@ -165,15 +197,26 @@ export async function POST(req: Request) {
           try {
             const context = vm.createContext(sandbox);
             const script = new vm.Script(wrappedCode);
-            script.runInContext(context, { timeout: 3000 });
+            script.runInContext(context, { timeout: 3500 });
             
             const results = sandbox.RESULTS;
+
+            // Robust Normalizer for scored comparison
+            const robustNormalize = (s: string) => (s || "")
+              .toString()
+              .replace(/\r\n/g, '\n')
+              .split('\n')
+              .map(l => l.trim())
+              .filter(l => l !== "")
+              .join('\n')
+              .toLowerCase();
+
             if (results && Array.isArray(results)) {
               let passedCount = 0;
               results.forEach((r: any, idx: number) => {
                 const tc = testCases[idx];
-                const expectedNorm = (tc.expectedOutput || "").toString().toLowerCase().trim();
-                const actualNorm = (r.actual || "").toString().toLowerCase().trim();
+                const expectedNorm = robustNormalize(tc.expectedOutput);
+                const actualNorm = robustNormalize(r.actual);
                 if (actualNorm === expectedNorm && !r.error) {
                   passedCount++;
                 }

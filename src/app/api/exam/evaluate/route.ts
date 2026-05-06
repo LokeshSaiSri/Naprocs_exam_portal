@@ -30,29 +30,40 @@ export async function POST(req: Request) {
         const cases = ${JSON.stringify(testCases)};
         const entry = "${entryPoint}";
 
+        // Robust Normalizer: Standardizes formatting for comparison
+        const robustNormalize = (s) => (s || "")
+          .toString()
+          .replace(/\\r\\n/g, '\\n')
+          .split('\\n')
+          .map(l => l.trim())
+          .filter(l => l !== "")
+          .join('\\n')
+          .toLowerCase();
+
         for (let i = 0; i < cases.length; i++) {
            const tc = cases[i];
            const res = { index: i, actual: null, error: null, runtime: 0 }; 
            const start = Date.now();
            
-           // Initialize Stdin and Stdout for this specific test case
            global.STDOUT = [];
            global.STDIN_CONTENT = (tc.input || "").toString();
 
            try {
-              // EXECUTE STUDENT CODE
-              // Wrapping in a function to isolate scope but allow immediate execution
               (function() {
                 ${studentCode}
 
-                // If no console output was produced, but an entry function exists, 
-                // try to call it (Function-based fallback)
                 if (global.STDOUT.length === 0 && entry && typeof eval(entry) === 'function') {
                    let args = [];
                    const rawInput = (tc.input || "").trim();
-                   if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
-                     args = [JSON.parse(rawInput)];
-                   } else {
+                   
+                   // Robust Input Dispatch: Try JSON, fallback to comma-split
+                   try {
+                     if (rawInput.startsWith('[') || rawInput.startsWith('{')) {
+                       args = [JSON.parse(rawInput)];
+                     } else {
+                       throw new Error("Force comma split");
+                     }
+                   } catch(e) {
                      args = rawInput.split(',').map(v => {
                         const s = v.trim();
                         if (!isNaN(s) && s !== "" && !s.startsWith("0b") && !s.startsWith("0x")) return Number(s);
@@ -61,6 +72,7 @@ export async function POST(req: Request) {
                         return s;
                      });
                    }
+
                    let retValue = eval(entry)(...args);
                    if (retValue !== undefined) {
                       if (Array.isArray(retValue) || (retValue !== null && typeof retValue === 'object')) {
@@ -72,7 +84,7 @@ export async function POST(req: Request) {
               })();
 
               if (global.STDOUT.length === 0) {
-                 throw new Error("Logic produced no output. Use console.log() or return.");
+                 throw new Error("Logic produced no output.");
               }
 
               res.actual = global.STDOUT.join('\\n').trim();
@@ -90,23 +102,20 @@ export async function POST(req: Request) {
        RESULTS: null,
        STDOUT: [],
        STDIN_CONTENT: "",
-       Buffer: Buffer, // Required for some standard operations
-       // Mocked Require for Competitive Programming Patterns
+       Buffer: Buffer,
        require: (id: string) => {
           if (id === 'fs') {
              return {
-                readFileSync: (fd: any) => {
-                   // Mock stdin (file descriptor 0 or "/dev/stdin")
-                   if (fd === 0 || fd === '/dev/stdin' || fd === '/dev/stdin') {
+                readFileSync: (fd: any, encoding?: string) => {
+                   if (fd === 0 || fd === '/dev/stdin') {
                       return sandbox.STDIN_CONTENT;
                    }
-                   throw new Error("File System access restricted in sandbox");
+                   throw new Error("FS restricted");
                 }
              };
           }
-          throw new Error(`Module ${id} not found in sandbox`);
+          throw new Error(`Module ${id} restricted`);
        },
-       // Mocked Console to Capture Standard Output
        console: {
           log: (...args: any[]) => {
              sandbox.STDOUT.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
@@ -116,9 +125,7 @@ export async function POST(req: Request) {
           warn: (...args: any[]) => sandbox.console.log(...args),
        },
        process: {
-          stdout: {
-             write: (s: string) => sandbox.STDOUT.push(s)
-          }
+          stdout: { write: (s: string) => sandbox.STDOUT.push(s) }
        }
     };
     
@@ -127,46 +134,39 @@ export async function POST(req: Request) {
     try {
       const script = new vm.Script(wrappedCode);
       script.runInContext(context, { timeout: 2500 });
-
       const results = sandbox.RESULTS;
 
       if (!results) {
         return NextResponse.json({ 
            success: false, 
            verdict: 'RUNTIME_ERROR', 
-           message: "Evaluation engine failed to produce results. ReferenceError may have occurred." 
+           message: "VM failure: produced no results matrix." 
         });
       }
 
-      // 3. Perform Comparison against Ground Truth (Server-side)
+      // 3. Comparison with Robust Normalization
+      const robustNormalize = (s: string) => (s || "")
+        .toString()
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l !== "")
+        .join('\n')
+        .toLowerCase();
+
       const evaluatedResults = results.map((r: any, idx: number) => {
         const tc = testCases[idx];
-        const expectedNorm = (tc.expectedOutput || "").toString().toLowerCase().trim();
-        const actualNorm = (r.actual || "").toString().toLowerCase().trim();
+        const expectedNorm = robustNormalize(tc.expectedOutput);
+        const actualNorm = robustNormalize(r.actual);
         const isPassed = !r.error && (actualNorm === expectedNorm);
 
-        // Scrub details for hidden test cases
         if (tc.isHidden) {
-          return { 
-            index: r.index, 
-            passed: isPassed, 
-            error: r.error, 
-            runtime: r.runtime,
-            isHidden: true 
-          };
+          return { index: r.index, passed: isPassed, error: r.error, runtime: r.runtime, isHidden: true };
         }
-
-        return { 
-           ...r, 
-           passed: isPassed,
-           isHidden: false 
-        };
+        return { ...r, passed: isPassed, isHidden: false };
       });
 
-      return NextResponse.json({
-        success: true,
-        results: evaluatedResults
-      });
+      return NextResponse.json({ success: true, results: evaluatedResults });
 
     } catch (e: any) {
       if (e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
@@ -174,7 +174,6 @@ export async function POST(req: Request) {
       }
       return NextResponse.json({ success: false, verdict: 'RUNTIME_ERROR', message: e.message });
     }
-
   } catch (error: any) {
     console.error("Evaluation API Hardware Failure:", error);
     return NextResponse.json({ error: "Internal Evaluation Failure" }, { status: 500 });
