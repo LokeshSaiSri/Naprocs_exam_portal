@@ -28,12 +28,14 @@ export async function POST(req: Request) {
     }
 
     const now = new Date();
+    const GRACE_PERIOD = 2 * 60 * 1000; // 2 minutes buffer
+
     if (drive.regStart && now < new Date(drive.regStart)) {
       return NextResponse.json({ 
         error: `Registration for this drive opens on ${formatToIST(drive.regStart)}` 
       }, { status: 403 });
     }
-    if (drive.regEnd && now > new Date(drive.regEnd)) {
+    if (drive.regEnd && now.getTime() > new Date(drive.regEnd).getTime() + GRACE_PERIOD) {
       return NextResponse.json({ 
         error: "The registration window for this batch has closed." 
       }, { status: 403 });

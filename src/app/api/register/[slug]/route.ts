@@ -13,9 +13,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
     }
 
     const now = new Date();
+    const GRACE_PERIOD = 2 * 60 * 1000; // 2 minutes buffer
+    
     let status = "ACTIVE";
     if (now < new Date(drive.regStart)) status = "PENDING";
-    if (now > new Date(drive.regEnd)) status = "CLOSED";
+    if (now.getTime() > new Date(drive.regEnd).getTime() + GRACE_PERIOD) status = "CLOSED";
     if (!drive.isExamActive) status = "DEACTIVATED";
 
     return NextResponse.json({ 

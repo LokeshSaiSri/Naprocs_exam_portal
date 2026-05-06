@@ -35,12 +35,14 @@ export async function POST(req: Request) {
     }
 
     const now = new Date();
+    const GRACE_PERIOD = 2 * 60 * 1000; // 2 minutes buffer
+
     if (drive.examStart && now < new Date(drive.examStart)) {
       return NextResponse.json({ 
         error: `Your assessment portal opens on ${formatToIST(drive.examStart)}` 
       }, { status: 403 });
     }
-    if (drive.examEnd && now > new Date(drive.examEnd)) {
+    if (drive.examEnd && now.getTime() > new Date(drive.examEnd).getTime() + GRACE_PERIOD) {
       return NextResponse.json({ 
         error: "The assessment window for your batch has closed." 
       }, { status: 403 });
