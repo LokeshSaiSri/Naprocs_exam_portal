@@ -370,31 +370,51 @@ export default function AdvancedQuestionBank() {
 
         const questions = lines.slice(1).map(line => {
           const values = parseCSVLine(line);
-          const q: any = { type: 'MCQ', driveId: selectedDriveId }; // Associate with current drive
+          const q: any = { driveId: selectedDriveId }; 
+          
           headers.forEach((h, i) => {
              let val = values[i];
              
-             if (h === 'options') {
+             if (h === 'options' || h === 'testCases') {
                 try { 
-                  // Attempt to parse the JSON array of strings
-                  q[h] = JSON.parse(val || "[]"); 
+                   // Attempt to parse JSON arrays (e.g. ["opt1", "opt2"] or [{"input":"1","expectedOutput":"1"}])
+                   const parsed = JSON.parse(val || "[]");
+                   q[h] = Array.isArray(parsed) ? parsed : [];
                 } catch (e) { 
-                  console.warn(`JSON Parse Error in column ${h}:`, val);
-                  q[h] = []; 
+                   q[h] = []; 
                 }
              } else {
-                q[h] = val;
+                // Only assign if value is not an empty string, or provide fallback for content
+                if (val && val.trim() !== "") {
+                   q[h] = val;
+                }
              }
           });
 
-          // Post-process correctAnswer for MCQ: Mapping index to text
+          // 1. Mandatory Fallback: Title as Content
+          if (!q.content || q.content.trim() === "") {
+             q.content = q.title || "No description provided.";
+          }
+
+          // 2. Auto-Detection of Type
+          if (q.testCases && q.testCases.length > 0) {
+             q.type = 'CODING';
+          } else if (!q.type) {
+             q.type = 'MCQ';
+          }
+
+          // 3. Post-process correctAnswer for MCQ: Mapping index to text
           if (q.type === 'MCQ' && Array.isArray(q.options) && q.options.length > 0) {
              const maybeIndex = parseInt(q.correctAnswer);
-             // Verify if it's a valid numerical index
              if (!isNaN(maybeIndex) && maybeIndex >= 0 && maybeIndex < q.options.length) {
                 q.correctAnswer = q.options[maybeIndex];
              }
           }
+
+          // 4. Final Cleanup: Remove any empty string keys that might trip Mongoose
+          Object.keys(q).forEach(key => {
+             if (q[key] === "" || q[key] === undefined) delete q[key];
+          });
 
           return q;
         });
@@ -410,14 +430,16 @@ export default function AdvancedQuestionBank() {
 
         if (response.ok) {
           setUploadSuccess(true);
-          fetchLibrary(); // Auto-sync library after bulk import
+          fetchLibrary(); 
           setTimeout(() => setUploadSuccess(false), 5000);
         } else {
-          alert(`Upload Failed: ${data.error}${data.details ? `\n\n${data.details.join('\n')}` : ''}`);
+          // Display the specific details from the server's new validation logic
+          const errorMsg = data.details ? `${data.error}:\n${data.details.join('\n')}` : data.error;
+          alert(`Upload Failed: ${errorMsg}`);
         }
       } catch (err) {
         console.error("Bulk Commit Fault");
-        alert("A network error occurred while committing questions. Please try again.");
+        alert("Network Error: Could not reach the ingestion cluster.");
       } finally {
         setIsUploading(false);
       }
