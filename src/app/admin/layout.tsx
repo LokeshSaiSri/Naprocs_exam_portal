@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Library, Activity, Settings, LogOut, Users, Briefcase } from 'lucide-react';
+import { LayoutDashboard, Library, Activity, Settings, LogOut, Users, Briefcase, Video } from 'lucide-react';
 import { ReactNode } from 'react';
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
@@ -62,8 +62,14 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           >
             <LayoutDashboard className="h-4 w-4" /> Live Kanban
           </Link>
-          <Link 
-            href="/admin/leaderboard" 
+          <Link
+            href="/admin/proctoring"
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive('/admin/proctoring') ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'hover:bg-muted/50 text-foreground/80 hover:text-foreground'}`}
+          >
+            <Video className="h-4 w-4" /> Proctoring
+          </Link>
+          <Link
+            href="/admin/leaderboard"
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive('/admin/leaderboard') ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'hover:bg-muted/50 text-foreground/80 hover:text-foreground'}`}
           >
             <Users className="h-4 w-4" /> Leaderboard

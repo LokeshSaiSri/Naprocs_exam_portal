@@ -1,46 +1,44 @@
 import { NextResponse } from 'next/server';
-import dbConnect from '@/lib/mongodb';
-import Candidate from '@/models/Candidate';
-import ExamSession from '@/models/ExamSession';
+import supabase from '@/lib/supabase';
 
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    await dbConnect();
     const params = await context.params;
     const { id } = params;
 
     // 1. Clear Candidate Status and Session Locks
-    const candidate = await Candidate.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          stage: 'EXAM_PENDING',
-          examScore: 0,
-          cheatWarnings: 0,
-          currentSessionId: null,
-          lastActiveAt: null,
-          scoreLogic: 0,
-          scoreArchitecture: 0,
-          scoreLinguistic: 0,
-          scoreMission: 0
-        }
-      },
-      { new: true }
-    );
+    const { data: candidate, error: candidateError } = await supabase
+      .from('candidates')
+      .update({
+        stage: 'EXAM_PENDING',
+        exam_score: 0,
+        cheat_warnings: 0,
+        current_session_id: null,
+        last_active_at: null,
+        score_logic: 0,
+        score_architecture: 0,
+        score_linguistic: 0,
+        score_mission: 0
+      })
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+
+    if (candidateError) throw candidateError;
 
     if (!candidate) {
       return NextResponse.json({ success: false, error: 'Candidate not found' }, { status: 404 });
     }
 
     // 2. Wipe all existing exam sessions for this candidate to ensure a fresh start
-    // We use deleteMany to clear potential multiple dangling sessions
-    await ExamSession.deleteMany({ candidateId: id });
+    const { error: sessionError } = await supabase.from('exam_sessions').delete().eq('candidate_id', id);
+    if (sessionError) throw sessionError;
 
     console.log(`[Admin] Reset performed for candidate: ${candidate.email} (${id})`);
 
-    return NextResponse.json({ 
-      success: true, 
-      message: 'Candidate attempt reset successfully and sessions purged.' 
+    return NextResponse.json({
+      success: true,
+      message: 'Candidate attempt reset successfully and sessions purged.'
     });
   } catch (error) {
     console.error("Reset API Exception:", error);

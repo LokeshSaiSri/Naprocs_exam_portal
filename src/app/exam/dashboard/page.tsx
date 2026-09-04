@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useExamStore } from "@/store/examStore";
 import { useExamSync } from "@/hooks/useExamSync";
+import { useProctoringCapture, ProctoringViolationType } from "@/hooks/useProctoringCapture";
 import { motion, AnimatePresence } from "framer-motion";
 import Editor from "@monaco-editor/react";
 import { 
@@ -17,11 +18,41 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+// Multi-language coding round. JavaScript keeps using the question's own
+// boilerplateCode + the existing in-process vm grading, unchanged. The other
+// four run as a full program via a self-hosted Piston instance: the code
+// reads `input` from stdin and must print its answer to stdout -- the
+// standard convention across languages, since a "call this function" contract
+// doesn't translate cleanly across JS/Python/Java/C/C++ signatures.
+const LANGUAGE_LABELS: Record<string, string> = {
+  javascript: "JavaScript (Node.js)",
+  python: "Python 3",
+  java: "Java",
+  c: "C",
+  cpp: "C++",
+};
+
+const MONACO_LANGUAGE_MAP: Record<string, string> = {
+  javascript: "javascript",
+  python: "python",
+  java: "java",
+  c: "c",
+  cpp: "cpp",
+};
+
+const LANGUAGE_STARTERS: Record<string, string> = {
+  python: "# Read the input from stdin and print your answer to stdout.\nline = input()\n",
+  java: "import java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        // Read the input from stdin and print your answer via System.out.println.\n    }\n}\n",
+  c: "#include <stdio.h>\n\nint main(void) {\n    // Read the input from stdin and print your answer via printf.\n    return 0;\n}\n",
+  cpp: "#include <iostream>\nusing namespace std;\n\nint main() {\n    // Read the input from stdin and print your answer via cout.\n    return 0;\n}\n",
+};
 
 export default function ExamDashboard() {
   const router = useRouter();
   
-  const { isAuthenticated, candidate, cheatWarnings, incrementCheatWarning, logout } = useExamStore();
+  const { isAuthenticated, candidate, cheatWarnings, incrementCheatWarning, logout, mediaStream } = useExamStore();
   
   // Real auth tracking - no more "anonymous" fallbacks
   const sessionId = candidate ? `session-${candidate.id}` : ""; 
@@ -53,9 +84,37 @@ export default function ExamDashboard() {
   const [testResults, setTestResults] = useState<any[] | null>(null);
   const [runningTests, setRunningTests] = useState(false);
   const [finalCandidateData, setFinalCandidateData] = useState<{name: string, roll: string} | null>(null);
+  const [violationMessage, setViolationMessage] = useState(
+    "System detected you switched tabs or left the secure environment. This incident has been logged."
+  );
 
   // Derive stage-specific questions
   const stageQuestions = (questions || []).filter(q => q.type === examStage);
+
+  // Persist a proctoring violation immediately, not just on the next periodic
+  // sync tick -- cheat warnings previously lived only in client-side Zustand
+  // state (never written to candidates.cheat_warnings), so a refresh reset the
+  // count to 0 and an admin reviewing a candidate afterward had no visibility
+  // into how many violations actually occurred. Reuses the already
+  // load-tested /api/exam/sync route rather than adding a new endpoint.
+  const persistCheatWarning = async (count: number) => {
+    const activeSession = recoveredSessionId || sessionId;
+    if (!candidateId || !activeSession) return;
+    try {
+      await fetch('/api/exam/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: activeSession,
+          candidateId,
+          incomingResponses: responses,
+          cheatWarnings: count,
+        }),
+      });
+    } catch (e) {
+      console.error("Failed to persist cheat warning:", e);
+    }
+  };
 
   const unansweredCount = stageQuestions.filter(q => {
      const res = responses[q._id];
@@ -98,23 +157,29 @@ export default function ExamDashboard() {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.hidden && !isSubmitted && !isTerminated) {
+        setViolationMessage("System detected you switched tabs or left the secure environment. This incident has been logged.");
         if (settings?.proctoringSeverity === 'HIGH') {
            setIsTerminated(true);
+           persistCheatWarning(1);
            handleViolationSubmit("Tab Switch (Strict Violation)");
         } else {
            incrementCheatWarning();
+           persistCheatWarning(useExamStore.getState().cheatWarnings);
            setShowWarningModal(true);
         }
       }
     };
-    
+
     const handleFullscreenChange = () => {
        if (!document.fullscreenElement && !isSubmitted && !isTerminated) {
+          setViolationMessage("System detected you exited fullscreen mode. This incident has been logged.");
           if (settings?.proctoringSeverity === 'HIGH') {
              setIsTerminated(true);
+             persistCheatWarning(1);
              handleViolationSubmit("Fullscreen Exit (Strict Violation)");
           } else {
              incrementCheatWarning();
+             persistCheatWarning(useExamStore.getState().cheatWarnings);
              setShowWarningModal(true);
           }
        }
@@ -134,6 +199,70 @@ export default function ExamDashboard() {
       document.removeEventListener("paste", blockEvent);
     };
   }, [incrementCheatWarning, settings, isSubmitted, isTerminated]);
+
+  // Webcam/Mic Proctoring: routes through the exact same warning/escalation
+  // chain as tab-switch/fullscreen above (incrementCheatWarning ->
+  // persistCheatWarning -> warn-modal or handleViolationSubmit), per
+  // PROCTORING_RULEBOOK.md. LOOKING_AWAY is hard-wired to never hit the
+  // HIGH-severity instant-submit branch, regardless of drive severity --
+  // webcam gaze detection has well-documented false-positive rates even in
+  // commercial proctoring products, so it only ever counts toward the
+  // warning tally, never auto-terminates a candidate on its own.
+  const handleProctoringViolation = useCallback((type: ProctoringViolationType) => {
+    if (isSubmitted || isTerminated) return;
+    const REASONS: Record<ProctoringViolationType, string> = {
+      NO_FACE: "No face was visible in your webcam feed.",
+      MULTIPLE_FACES: "More than one face was detected in your webcam feed.",
+      LOOKING_AWAY: "You appeared to look away from the screen for a sustained period.",
+      HIGH_NOISE: "Elevated ambient noise was detected on your microphone.",
+    };
+    const SUBMIT_REASONS: Record<ProctoringViolationType, string> = {
+      NO_FACE: "No Face Detected (Strict Violation)",
+      MULTIPLE_FACES: "Multiple Faces Detected (Strict Violation)",
+      LOOKING_AWAY: "Looking Away From Screen",
+      HIGH_NOISE: "Elevated Ambient Noise (Strict Violation)",
+    };
+    setViolationMessage(`${REASONS[type]} This incident has been logged.`);
+    const canHardTerminate = type !== "LOOKING_AWAY";
+    if (canHardTerminate && settings?.proctoringSeverity === 'HIGH') {
+      setIsTerminated(true);
+      persistCheatWarning(1);
+      handleViolationSubmit(SUBMIT_REASONS[type]);
+    } else {
+      incrementCheatWarning();
+      persistCheatWarning(useExamStore.getState().cheatWarnings);
+      setShowWarningModal(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSubmitted, isTerminated, settings]);
+
+  useProctoringCapture({
+    stream: mediaStream,
+    candidateId,
+    sessionId: recoveredSessionId || sessionId,
+    enabled: !!settings?.webcamProctoringEnabled && !isSubmitted && !isTerminated,
+    onViolation: handleProctoringViolation,
+  });
+
+  // Visible self-view feed: purely cosmetic, reuses the same granted stream
+  // the detection hook above already consumes -- no second camera request.
+  // Candidates see themselves on camera so they know they're being watched,
+  // without the UI revealing anything about detection cadence or logic.
+  //
+  // A callback ref, not a plain ref + useEffect(..., [mediaStream]): the
+  // <video> element only mounts once `settings` finishes loading and
+  // webcamProctoringEnabled flips true, which happens *after* mediaStream is
+  // already stable (it was granted back on the Device Check screen). A
+  // useEffect keyed on mediaStream never re-fires once the element shows up
+  // later, since the dependency itself never changes again -- the stream was
+  // real, it just never got attached. A callback ref fires exactly when the
+  // node mounts, sidestepping the ordering problem entirely.
+  const bindSelfView = useCallback(
+    (el: HTMLVideoElement | null) => {
+      if (el) el.srcObject = mediaStream;
+    },
+    [mediaStream]
+  );
 
   // Timer Implementation with Auto-Submit Watchdog
   useEffect(() => {
@@ -233,14 +362,16 @@ export default function ExamDashboard() {
     setTestResults(null); // Clear previous results
 
     try {
-      const studentCode = responses[currentQ._id]?.codeStr || currentQ.boilerplateCode || "";
-      
+      const language = responses[currentQ._id]?.language || 'javascript';
+      const studentCode = responses[currentQ._id]?.codeStr || (language === 'javascript' ? currentQ.boilerplateCode : LANGUAGE_STARTERS[language]) || "";
+
       const res = await fetch("/api/exam/evaluate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          studentCode, 
-          questionId: currentQ._id 
+        body: JSON.stringify({
+          studentCode,
+          questionId: currentQ._id,
+          language
         })
       });
 
@@ -282,14 +413,16 @@ export default function ExamDashboard() {
       for (const q of (questions || [])) {
         if (q.type === 'CODING' && finalEvaluatedResponses[q._id]) {
           try {
-            const studentCode = finalEvaluatedResponses[q._id].codeStr || q.boilerplateCode || "";
-            
+            const language = finalEvaluatedResponses[q._id].language || 'javascript';
+            const studentCode = finalEvaluatedResponses[q._id].codeStr || (language === 'javascript' ? q.boilerplateCode : LANGUAGE_STARTERS[language]) || "";
+
             const res = await fetch("/api/exam/evaluate", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ 
-                studentCode, 
-                questionId: q._id 
+              body: JSON.stringify({
+                studentCode,
+                questionId: q._id,
+                language
               })
             });
 
@@ -491,7 +624,7 @@ export default function ExamDashboard() {
              </div>
              <DialogTitle className="text-2xl font-bold text-destructive tracking-tight">Proctoring Violation</DialogTitle>
              <DialogDescription render={<div />} className="text-base text-foreground/80 mt-2">
-                System detected you switched tabs or left the secure environment. This incident has been logged.
+                {violationMessage}
                 <br/><br/>
                 {settings?.proctoringSeverity === 'MEDIUM' ? (
                    <span className="font-bold text-destructive">
@@ -503,7 +636,7 @@ export default function ExamDashboard() {
                 )}
              </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="sm:justify-center pb-2 pt-6">
+          <DialogFooter className="sm:justify-center pb-2 pt-6 bg-destructive/5 border-destructive/20">
              <Button variant="destructive" className="w-full h-12 font-bold shadow-2xl shadow-destructive/20" onClick={() => {
                 setShowWarningModal(false);
                 if (settings?.proctoringSeverity === 'MEDIUM' && cheatWarnings >= settings?.maxCheatWarnings) {
@@ -610,7 +743,19 @@ export default function ExamDashboard() {
               </div>
               {isSyncing && <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" title="Telemetry Sync Active" />}
             </div>
-            
+
+            {settings?.webcamProctoringEnabled && (
+              <div className="p-4 border-b border-border/40 shrink-0">
+                <div className="relative aspect-video rounded-lg overflow-hidden border border-border/50 bg-black">
+                  <video ref={bindSelfView} autoPlay muted playsInline className="w-full h-full object-cover" />
+                  <div className="absolute top-1.5 left-1.5 flex items-center gap-1.5 bg-black/60 rounded-full px-2 py-0.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-white/90">Monitoring Active</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <ScrollArea className="flex-1 p-5">
               <div className="grid grid-cols-5 gap-2 pb-10">
                 {stageQuestions.map((q, i) => {
@@ -698,35 +843,74 @@ export default function ExamDashboard() {
 
             {currentQ?.type === 'CODING' && (
               <>
-              <div className="rounded-2xl overflow-hidden border border-border/50 shadow-2xl shadow-black/80 bg-[#1e1e1e] h-[550px] relative">
-                <div className="h-10 bg-muted/20 border-b border-border/30 flex items-center px-4 justify-between shrink-0">
-                   <div className="flex items-center gap-2">
-                      <Code className="h-4 w-4 text-accent" />
-                      <span className="text-[10px] uppercase tracking-widest font-bold text-muted-foreground mr-4">JavaScript (Node.js)</span>
-                      <Button 
-                        size="sm" 
-                        variant="secondary" 
-                        disabled={runningTests}
-                        onClick={runLocalTests}
-                        className="h-7 text-[10px] uppercase tracking-widest font-bold bg-accent/20 text-accent hover:bg-accent hover:text-accent-foreground border-accent/30"
-                      >
-                         {runningTests ? "Executing..." : "Run Test Suite"}
-                      </Button>
-                   </div>
-                   <div className="flex gap-1.5">
-                      <div className="h-2 w-2 rounded-full bg-destructive/40" />
-                      <div className="h-2 w-2 rounded-full bg-amber-500/40" />
-                      <div className="h-2 w-2 rounded-full bg-emerald-500/40" />
-                   </div>
-                </div>
-                <Editor
-                  height="calc(100% - 40px)"
-                  defaultLanguage="javascript"
-                  theme="vs-dark"
-                  value={responses[currentQ?._id || ""]?.codeStr || currentQ?.boilerplateCode || ""}
-                  onChange={(val) => updateResponse(currentQ?._id || "", { codeStr: val || "" })}
-                  options={{ 
-                    minimap: { enabled: false }, 
+              {(() => {
+                const qid = currentQ?._id || "";
+                const currentLanguage = responses[qid]?.language || 'javascript';
+                const codeByLanguage = responses[qid]?.codeByLanguage || {};
+
+                const handleLanguageChange = (newLang: string) => {
+                  const oldLang = currentLanguage;
+                  const oldCode = responses[qid]?.codeStr ?? (oldLang === 'javascript' ? currentQ?.boilerplateCode : LANGUAGE_STARTERS[oldLang]) ?? "";
+                  const nextCodeByLanguage = { ...codeByLanguage, [oldLang]: oldCode };
+                  const newCode = nextCodeByLanguage[newLang] ?? (newLang === 'javascript' ? (currentQ?.boilerplateCode || "") : LANGUAGE_STARTERS[newLang]) ?? "";
+                  updateResponse(qid, { language: newLang, codeByLanguage: nextCodeByLanguage, codeStr: newCode });
+                  setTestResults(null); // Stale results from the previous language no longer apply
+                };
+
+                return (
+                  <>
+                  {currentLanguage !== 'javascript' && (
+                    <div className="flex items-start gap-3 p-4 rounded-xl border border-accent/20 bg-accent/[0.03] text-xs text-muted-foreground">
+                      <Code className="h-4 w-4 text-accent shrink-0 mt-0.5" />
+                      <span>
+                        <strong className="text-accent">{LANGUAGE_LABELS[currentLanguage]} convention:</strong> read the input from stdin
+                        (e.g. <code className="font-mono bg-black/20 px-1 rounded">input()</code>, <code className="font-mono bg-black/20 px-1 rounded">Scanner</code>,
+                        <code className="font-mono bg-black/20 px-1 rounded"> scanf</code>, <code className="font-mono bg-black/20 px-1 rounded">cin</code> depending
+                        on your language) and print your answer to stdout.
+                      </span>
+                    </div>
+                  )}
+                  <div className="rounded-2xl overflow-hidden border border-border/50 shadow-2xl shadow-black/80 bg-[#1e1e1e] h-[550px] relative">
+                    <div className="h-10 bg-muted/20 border-b border-border/30 flex items-center px-4 justify-between shrink-0">
+                       <div className="flex items-center gap-2">
+                          <Code className="h-4 w-4 text-accent" />
+                          <Select value={currentLanguage} onValueChange={handleLanguageChange}>
+                             <SelectTrigger className="h-7 w-[168px] text-[10px] uppercase tracking-widest font-bold border-none bg-transparent hover:bg-white/5 mr-2">
+                                <SelectValue />
+                             </SelectTrigger>
+                             <SelectContent>
+                                {Object.entries(LANGUAGE_LABELS).map(([key, label]) => (
+                                   <SelectItem key={key} value={key} className="text-xs">{label}</SelectItem>
+                                ))}
+                             </SelectContent>
+                          </Select>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={runningTests}
+                            onClick={runLocalTests}
+                            className="h-7 text-[10px] uppercase tracking-widest font-bold bg-accent/20 text-accent hover:bg-accent hover:text-accent-foreground border-accent/30"
+                          >
+                             {runningTests ? "Executing..." : "Run Test Suite"}
+                          </Button>
+                       </div>
+                       <div className="flex gap-1.5">
+                          <div className="h-2 w-2 rounded-full bg-destructive/40" />
+                          <div className="h-2 w-2 rounded-full bg-amber-500/40" />
+                          <div className="h-2 w-2 rounded-full bg-emerald-500/40" />
+                       </div>
+                    </div>
+                    <Editor
+                      height="calc(100% - 40px)"
+                      language={MONACO_LANGUAGE_MAP[currentLanguage]}
+                      theme="vs-dark"
+                      value={responses[qid]?.codeStr ?? (currentLanguage === 'javascript' ? currentQ?.boilerplateCode : LANGUAGE_STARTERS[currentLanguage]) ?? ""}
+                      onChange={(val) => {
+                        const nextCodeByLanguage = { ...codeByLanguage, [currentLanguage]: val || "" };
+                        updateResponse(qid, { codeStr: val || "", language: currentLanguage, codeByLanguage: nextCodeByLanguage });
+                      }}
+                      options={{
+                        minimap: { enabled: false },
                     fontSize: 15, 
                     fontFamily: 'var(--font-geist-mono)', 
                     padding: { top: 20 }, 
@@ -739,8 +923,11 @@ export default function ExamDashboard() {
                      // Bind blur event to manual sync
                      editor.onDidBlurEditorText(() => manualSync());
                   }}
-                />
-              </div>
+                    />
+                  </div>
+                  </>
+                );
+              })()}
 
               {/* Test Case Laboratory Section */}
               <div className="space-y-4 pt-6">

@@ -1,35 +1,54 @@
 import { NextResponse } from "next/server";
-import connectToDatabase from "@/lib/mongodb";
-import Candidate from "@/models/Candidate";
+import supabase from "@/lib/supabase";
+import { toCamelCase } from "@/lib/caseConvert";
+
+// Deliberately excludes access_pin -- matches old `.select("-accessPin")`.
+const CANDIDATE_COLUMNS =
+  "id,drive_id,name,email,phone,college_roll_number,resume_url,exam_score,stage,tech_notes,hr_notes,last_active_at,current_session_id,score_logic,score_architecture,score_linguistic,score_mission,cheat_warnings,created_at,updated_at";
 
 export async function GET(req: Request) {
   try {
-    await connectToDatabase();
-
     const { searchParams } = new URL(req.url);
     const stageQuery = searchParams.get("stage");
     const driveId = searchParams.get("driveId");
 
-    // Generic aggregation logic
-    let filterOptions: any = {};
+    let query = supabase.from("candidates").select(CANDIDATE_COLUMNS).order("exam_score", { ascending: false });
+
     if (stageQuery) {
-       filterOptions.stage = stageQuery;
+      query = query.eq("stage", stageQuery);
     } else {
-       // Only filter out PENDING if no specific stage is requested
-       filterOptions.stage = { $ne: 'EXAM_PENDING' };
+      // Only filter out PENDING if no specific stage is requested
+      query = query.neq("stage", "EXAM_PENDING");
     }
 
     if (driveId) {
-       filterOptions.driveId = driveId;
+      query = query.eq("drive_id", driveId);
     }
 
-    // Default sorting to highest exam scores specifically for the Leaderboard mapping
-    const candidates = await Candidate.find(filterOptions)
-                                    .select("-accessPin") // Strip sensitive access pins
-                                    .sort({ examScore: -1 })
-                                    .lean();
+    const { data: candidates, error } = await query;
+    if (error) throw error;
 
-    return NextResponse.json({ success: true, count: candidates.length, candidates }, { status: 200 });
+    // Part 4 decision (2026-09-01): resume_url is now a Supabase Storage
+    // object PATH, not a data URI. Resolve it to a short-lived signed URL
+    // here at read time -- the frontend just needs a URL it can put in an
+    // <iframe src>, same as before.
+    const resumePaths = candidates.map((c: any) => c.resume_url).filter(Boolean);
+    const signedUrlByPath: Record<string, string> = {};
+    if (resumePaths.length > 0) {
+      const { data: signedUrls, error: signError } = await supabase.storage
+        .from("resumes")
+        .createSignedUrls(resumePaths, 3600); // 1 hour
+      if (signError) throw signError;
+      (signedUrls || []).forEach((s: any) => {
+        if (s.signedUrl) signedUrlByPath[s.path] = s.signedUrl;
+      });
+    }
+    const candidatesWithResumeUrls = candidates.map((c: any) => ({
+      ...c,
+      resume_url: c.resume_url ? (signedUrlByPath[c.resume_url] || null) : c.resume_url,
+    }));
+
+    return NextResponse.json({ success: true, count: candidatesWithResumeUrls.length, candidates: toCamelCase(candidatesWithResumeUrls) }, { status: 200 });
 
   } catch (error: any) {
     console.error("Aggregation Failure:", error);
@@ -37,31 +56,39 @@ export async function GET(req: Request) {
   }
 }
 
+const VALID_STAGES = ['EXAM_PENDING', 'EXAM_COMPLETED', 'TECH_ROUND', 'HR_ROUND', 'SELECTED', 'REJECTED'];
+
 export async function PATCH(req: Request) {
   try {
-    await connectToDatabase();
-    
     const { candidateIds, stage } = await req.json();
 
     if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0 || !stage) {
       return NextResponse.json({ error: "Invalid bulk transition payload" }, { status: 400 });
     }
 
-    const VALID_STAGES = ['EXAM_PENDING', 'EXAM_COMPLETED', 'TECH_ROUND', 'HR_ROUND', 'SELECTED', 'REJECTED'];
     if (!VALID_STAGES.includes(stage)) {
       return NextResponse.json({ error: "Invalid target stage" }, { status: 400 });
     }
 
-    const result = await Candidate.updateMany(
-      { _id: { $in: candidateIds } },
-      { $set: { stage } }
-    );
+    // NOTE (flagged, minor): Postgres UPDATE reports all matched rows as
+    // "affected" -- unlike Mongo's modifiedCount, which excludes rows that
+    // already had the target stage (a true no-op). matchedCount and
+    // modifiedCount are therefore reported equal here; a minor parity gap,
+    // not a contract change (both keys still present with sane values).
+    const { data, error } = await supabase
+      .from("candidates")
+      .update({ stage })
+      .in("id", candidateIds)
+      .select("id");
 
-    return NextResponse.json({ 
-      success: true, 
-      matchedCount: result.matchedCount, 
-      modifiedCount: result.modifiedCount,
-      message: `${result.modifiedCount} Candidate(s) successfully transitioned to ${stage}.`
+    if (error) throw error;
+
+    const count = data.length;
+    return NextResponse.json({
+      success: true,
+      matchedCount: count,
+      modifiedCount: count,
+      message: `${count} Candidate(s) successfully transitioned to ${stage}.`
     }, { status: 200 });
 
   } catch (error: any) {

@@ -34,6 +34,10 @@ export default function RegisterPage() {
   const [driveInfo, setDriveInfo] = useState<any>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
+  // Review-before-you-submit step: captured form values sit here until the
+  // candidate confirms. Nothing is sent to the server until "Confirm & Register".
+  const [reviewData, setReviewData] = useState<z.infer<typeof formSchema> | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   // Fetch specific drive info for this slug
   const fetchDriveInfo = async () => {
@@ -53,7 +57,17 @@ export default function RegisterPage() {
   };
 
   useEffect(() => {
-     if (slug) fetchDriveInfo();
+     if (!slug) return;
+     fetchDriveInfo();
+     // Re-check every 30s (same polling idiom used across the admin views) --
+     // without this, a candidate who opens the link while registration is
+     // open and sits on the form past reg_end keeps seeing an enabled form.
+     // The actual POST /api/register still correctly rejects a late
+     // submission server-side either way; this just keeps the displayed
+     // status honest instead of stale.
+     const interval = setInterval(fetchDriveInfo, 30_000);
+     return () => clearInterval(interval);
+     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
   const form = useForm<z.infer<typeof formSchema>>({
@@ -69,19 +83,29 @@ export default function RegisterPage() {
   const resumeValue = form.watch("resume");
   const selectedFile = resumeValue?.[0];
 
-  const onSubmit = async (values: z.infer<typeof formSchema>) => {
+  // Step 1: form is valid -> move to the review card. No network call yet.
+  const onSubmit = (values: z.infer<typeof formSchema>) => {
+    setReviewError(null);
+    setReviewData(values);
+  };
+
+  // Step 2: candidate confirms on the review card -> this is the actual
+  // registration call, unchanged from what onSubmit used to do directly.
+  const confirmAndSubmit = async () => {
+    if (!reviewData) return;
     setIsSubmitting(true);
+    setReviewError(null);
     try {
       const formData = new FormData();
-      formData.append("name", values.fullName);
-      formData.append("email", values.email);
-      formData.append("phone", values.phone);
-      formData.append("collegeRollNumber", values.rollNumber);
+      formData.append("name", reviewData.fullName);
+      formData.append("email", reviewData.email);
+      formData.append("phone", reviewData.phone);
+      formData.append("collegeRollNumber", reviewData.rollNumber);
       formData.append("driveId", driveInfo._id);
-      
+
       // Extract the File object from the FileList
-      if (values.resume && values.resume[0]) {
-        formData.append("resume", values.resume[0]);
+      if (reviewData.resume && reviewData.resume[0]) {
+        formData.append("resume", reviewData.resume[0]);
       }
 
       const res = await fetch("/api/register", {
@@ -94,15 +118,21 @@ export default function RegisterPage() {
       if (res.ok) {
         setSuccessPin(data.accessPin);
         // Store for convenience
-        localStorage.setItem("examEmail", values.email);
+        localStorage.setItem("examEmail", reviewData.email);
       } else {
-        form.setError("root", { message: data.error || "Registration failed" });
+        setReviewError(data.error || "Registration failed");
       }
     } catch (err) {
-      form.setError("root", { message: "Network connection error" });
+      setReviewError("Network connection error");
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // Back to the form, previous values retained (form.reset() is NOT called).
+  const editDetails = () => {
+    setReviewError(null);
+    setReviewData(null);
   };
 
   const copyPin = () => {
@@ -157,6 +187,116 @@ export default function RegisterPage() {
                    </Link>
                 </CardFooter>
              </Card>
+          </motion.div>
+        ) : (reviewData && !successPin) ? (
+          <motion.div
+            key="review"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, filter: "blur(10px)" }}
+            transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+            className="w-full max-w-lg z-10"
+          >
+            <Card className="border-border/50 bg-card/60 backdrop-blur-xl shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary via-accent to-primary" />
+
+              <CardHeader className="space-y-3 pb-6">
+                <CardTitle className="text-3xl font-medium tracking-tight bg-clip-text text-transparent bg-gradient-to-br from-foreground to-foreground/70">
+                  Review Your Details
+                </CardTitle>
+                <CardDescription className="text-base text-muted-foreground/80">
+                  Please confirm everything below is correct before we lock in your registration.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="space-y-6">
+                {reviewError && (
+                  <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm text-center font-medium">
+                    {reviewError}
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-widest text-muted-foreground font-semibold">Candidate</p>
+                  <div className="rounded-xl border border-border/40 bg-input/20 divide-y divide-border/40">
+                    <div className="flex justify-between px-4 py-3">
+                      <span className="text-sm text-muted-foreground">Full Name</span>
+                      <span className="text-sm font-medium">{reviewData.fullName}</span>
+                    </div>
+                    <div className="flex justify-between px-4 py-3">
+                      <span className="text-sm text-muted-foreground">College Email</span>
+                      <span className="text-sm font-medium">{reviewData.email}</span>
+                    </div>
+                    <div className="flex justify-between px-4 py-3">
+                      <span className="text-sm text-muted-foreground">Phone Number</span>
+                      <span className="text-sm font-medium">{reviewData.phone}</span>
+                    </div>
+                    <div className="flex justify-between px-4 py-3">
+                      <span className="text-sm text-muted-foreground">Roll Number</span>
+                      <span className="text-sm font-medium font-mono uppercase">{reviewData.rollNumber}</span>
+                    </div>
+                    <div className="flex justify-between px-4 py-3">
+                      <span className="text-sm text-muted-foreground">Resume</span>
+                      <span className="text-sm font-medium truncate max-w-[220px]">
+                        {reviewData.resume?.[0]?.name || "No file selected"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-widest text-muted-foreground font-semibold">This Drive</p>
+                  <div className="rounded-xl border border-border/40 bg-input/20 divide-y divide-border/40">
+                    <div className="flex justify-between px-4 py-3">
+                      <span className="text-sm text-muted-foreground">Drive</span>
+                      <span className="text-sm font-medium">{driveInfo?.title}</span>
+                    </div>
+                    {driveInfo?.examStart && (
+                      <div className="flex justify-between px-4 py-3">
+                        <span className="text-sm text-muted-foreground">Exam Opens</span>
+                        <span className="text-sm font-medium">{formatToIST(driveInfo.examStart)}</span>
+                      </div>
+                    )}
+                    {driveInfo?.examEnd && (
+                      <div className="flex justify-between px-4 py-3">
+                        <span className="text-sm text-muted-foreground">Exam Closes</span>
+                        <span className="text-sm font-medium">{formatToIST(driveInfo.examEnd)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+
+              <CardFooter className="pt-2 pb-8 flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isSubmitting}
+                  onClick={editDetails}
+                  className="flex-1 h-12 text-base font-medium"
+                >
+                  Edit Details
+                </Button>
+                <Button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={confirmAndSubmit}
+                  className="flex-1 h-12 text-base font-medium transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-primary/20"
+                >
+                  {isSubmitting ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                      <span>Registering...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center space-x-2">
+                      <span>Confirm & Register</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </div>
+                  )}
+                </Button>
+              </CardFooter>
+            </Card>
           </motion.div>
         ) : !successPin ? (
           <motion.div
@@ -378,6 +518,7 @@ export default function RegisterPage() {
                 <button 
                   onClick={() => {
                     setSuccessPin(null);
+                    setReviewData(null);
                     form.reset();
                   }}
                   className="text-sm text-muted-foreground hover:text-foreground transition-colors underline-offset-4 hover:underline"

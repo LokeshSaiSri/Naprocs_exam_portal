@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server";
-import connectToDatabase from "@/lib/mongodb";
-import Candidate from "@/models/Candidate";
+import supabase from "@/lib/supabase";
 
 const VALID_STAGES = ['EXAM_PENDING', 'EXAM_COMPLETED', 'TECH_ROUND', 'HR_ROUND', 'SELECTED', 'REJECTED'];
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    await connectToDatabase();
-
     const params = await context.params;
     const { id } = params;
     const { stage } = await req.json();
@@ -16,18 +13,21 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       return NextResponse.json({ error: "Invalid stage descriptor mapped" }, { status: 400 });
     }
 
-    const updatedCandidate = await Candidate.findByIdAndUpdate(
-      id,
-      { $set: { stage } },
-      { new: true, runValidators: true }
-    );
+    const { data: updatedCandidate, error } = await supabase
+      .from("candidates")
+      .update({ stage })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+
+    if (error) throw error;
 
     if (!updatedCandidate) {
       return NextResponse.json({ error: "Candidate reference null" }, { status: 404 });
     }
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       stage: updatedCandidate.stage,
       message: "Stage mapping mutated seamlessly."
     }, { status: 200 });

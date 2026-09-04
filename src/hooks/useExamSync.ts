@@ -19,10 +19,17 @@ export function useExamSync(candidateId: string, sessionId: string) {
   // Initial Data Hydration
   useEffect(() => {
     if (!candidateId) return;
+    // Cancellation guard: without this, an in-flight fetch that resolves
+    // AFTER a newer invocation (React Strict Mode double-invokes this effect
+    // in dev, but the same race is possible in production on a slow network)
+    // can blindly overwrite `responses` with stale `existingResponses` from
+    // before the user answered anything, silently wiping out real answers.
+    let cancelled = false;
     const initializeBank = async () => {
       try {
         const res = await fetch(`/api/exam/questions?candidateId=${candidateId}`);
         const data = await res.json();
+        if (cancelled) return;
         if (data.success) {
            setQuestions(data.questions);
            if (data.settings) setSettings(data.settings);
@@ -31,10 +38,11 @@ export function useExamSync(candidateId: string, sessionId: string) {
            if (data.existingResponses) setResponses(data.existingResponses);
         }
       } catch (e) {
-        console.error("Hydration Error:", e);
+        if (!cancelled) console.error("Hydration Error:", e);
       }
     };
     initializeBank();
+    return () => { cancelled = true; };
   }, [candidateId]);
 
   const pingSync = useCallback(async () => {

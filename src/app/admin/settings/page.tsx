@@ -37,6 +37,7 @@ interface Drive {
   examDuration: number;
   proctoringSeverity: 'LOW' | 'MEDIUM' | 'HIGH';
   maxCheatWarnings: number;
+  webcamProctoringEnabled: boolean;
   mcqCount: number;
   codingCount: number;
 }
@@ -431,6 +432,14 @@ export default function MasterSchedulePage() {
                                            <ShieldAlert className="h-3 w-3 text-destructive/40 absolute right-2 top-1/2 -translate-y-1/2" />
                                         </div>
                                         <span className="text-[8px] font-bold text-muted-foreground uppercase">Warns</span>
+                                     </div>
+                                     <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/30">
+                                        <span className="text-[8px] font-bold text-muted-foreground uppercase">Webcam</span>
+                                        <Switch
+                                           size="sm"
+                                           checked={drive.webcamProctoringEnabled}
+                                           onCheckedChange={(v) => updateDriveField(drive._id, 'webcamProctoringEnabled', !!v)}
+                                        />
                                      </div>
                                   </div>
                                </td>

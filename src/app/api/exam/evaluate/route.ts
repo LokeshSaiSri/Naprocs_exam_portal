@@ -1,24 +1,65 @@
 import { NextResponse } from "next/server";
 import vm from "node:vm";
-import connectToDatabase from "@/lib/mongodb";
-import Question from "@/models/Question";
+import supabase from "@/lib/supabase";
+import { isPistonLanguage, executeViaPiston } from "@/lib/pistonExecute";
+
+// Robust Normalizer: Standardizes formatting for comparison (shared by both
+// the JS vm path below and the multi-language Piston path).
+const robustNormalizeOutput = (s: string) => (s || "")
+  .toString()
+  .replace(/\r\n/g, '\n')
+  .split('\n')
+  .map(l => l.trim())
+  .filter(l => l !== "")
+  .join('\n')
+  .toLowerCase();
 
 export async function POST(req: Request) {
   try {
-    const { studentCode, questionId } = await req.json();
+    const { studentCode, questionId, language } = await req.json();
 
     if (!studentCode || !questionId) {
       return NextResponse.json({ error: "No execution payload or identity provided" }, { status: 400 });
     }
 
-    await connectToDatabase();
-    const question = await Question.findById(questionId).lean() as any;
+    const { data: question, error: questionError } = await supabase
+      .from("questions").select("*").eq("id", questionId).maybeSingle();
+    if (questionError) throw questionError;
 
     if (!question) {
        return NextResponse.json({ error: "Question not found" }, { status: 404 });
     }
 
-    const testCases = question.testCases || [];
+    const testCases = question.test_cases || [];
+
+    // Multi-language path: Python/Java/C/C++ run as a FULL PROGRAM via a
+    // self-hosted Piston instance, stdin -> stdout (the standard convention
+    // for multi-language judges). JavaScript (language absent/undefined, for
+    // backward compatibility with sessions predating this feature, or
+    // explicitly 'javascript') keeps using the exact existing in-process vm
+    // sandbox below, unchanged.
+    if (isPistonLanguage(language)) {
+      const evaluatedResults = [];
+      for (let i = 0; i < testCases.length; i++) {
+        const tc = testCases[i];
+        const start = Date.now();
+        try {
+          const { stdout, stderr, exitCode } = await executeViaPiston(language, studentCode, (tc.input || "").toString());
+          const actual = stdout.trim();
+          const error = exitCode !== 0 ? (stderr || "Execution failed").slice(0, 500) : null;
+          const passed = !error && robustNormalizeOutput(actual) === robustNormalizeOutput(tc.expectedOutput);
+          const runtime = Date.now() - start;
+          evaluatedResults.push(
+            tc.isHidden
+              ? { index: i, passed, error, runtime, isHidden: true }
+              : { index: i, actual, error, runtime, passed, isHidden: false }
+          );
+        } catch (e: any) {
+          evaluatedResults.push({ index: i, actual: null, error: e.message || "Execution failed", runtime: Date.now() - start, passed: false, isHidden: !!tc.isHidden });
+        }
+      }
+      return NextResponse.json({ success: true, results: evaluatedResults });
+    }
 
     // 1. Generate Universal Wrapped Code
     const funcMatch = studentCode.match(/function\s+([a-zA-Z0-9_$]+)/);

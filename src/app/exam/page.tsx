@@ -1,18 +1,21 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { motion, AnimatePresence } from "framer-motion";
-import { ShieldAlert, Maximize, Play, Lock, CheckCircle2, ArrowLeft, Clock } from "lucide-react";
+import { ShieldAlert, Maximize, Play, Lock, CheckCircle2, ArrowLeft, Clock, Video, Circle, XCircle, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { useExamStore } from "@/store/examStore";
+import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { PROCTORING_WASM_BASE_URL, PROCTORING_MODEL_ASSET_URL } from "@/hooks/useProctoringCapture";
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email."),
@@ -21,7 +24,7 @@ const loginSchema = z.object({
 
 export default function ExamLoginPage() {
   const router = useRouter();
-  const { login, isAuthenticated, setFullscreen } = useExamStore();
+  const { login, isAuthenticated, setFullscreen, setMediaStream } = useExamStore();
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAlreadySubmitted, setIsAlreadySubmitted] = useState(false);
@@ -29,6 +32,145 @@ export default function ExamLoginPage() {
   const [isConcurrentSession, setIsConcurrentSession] = useState(false);
   const [submittedCandidate, setSubmittedCandidate] = useState<any>(null);
   const [scheduledStartTime, setScheduledStartTime] = useState<string | null>(null);
+
+  // Pre-exam waiting window: a candidate can log in up to 10 minutes before
+  // exam_start (enforced server-side in /api/auth/exam-login) and land here
+  // instead of being rejected -- no need to come back and re-enter creds.
+  const [examStartAt, setExamStartAt] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const isWaitingForStart = !!examStartAt && nowTick < new Date(examStartAt).getTime();
+
+  useEffect(() => {
+    if (!examStartAt) return;
+    const target = new Date(examStartAt).getTime();
+    if (Date.now() >= target) return;
+    const interval = setInterval(() => {
+      const t = Date.now();
+      setNowTick(t);
+      if (t >= target) clearInterval(interval);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [examStartAt]);
+
+  const formatCountdown = (targetIso: string, nowMs: number) => {
+    const diffSec = Math.max(0, Math.floor((new Date(targetIso).getTime() - nowMs) / 1000));
+    const m = Math.floor(diffSec / 60).toString().padStart(2, "0");
+    const s = (diffSec % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  // Device Check (webcam/mic proctoring) -- only shown when the candidate's
+  // drive has webcam_proctoring_enabled, resolved at login time so this page
+  // doesn't need a second round-trip before deciding whether to gate on it.
+  const [webcamProctoringEnabled, setWebcamProctoringEnabled] = useState(false);
+  const [deviceCheckPassed, setDeviceCheckPassed] = useState(false);
+  const [permissionState, setPermissionState] = useState<"idle" | "checking" | "granted" | "denied">("idle");
+  const [faceVisible, setFaceVisible] = useState(false);
+  const [consentChecked, setConsentChecked] = useState(false);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const deviceStreamRef = useRef<MediaStream | null>(null);
+  const needsDeviceCheck = webcamProctoringEnabled && !deviceCheckPassed;
+
+  const requestDeviceAccess = async () => {
+    setPermissionState("checking");
+    setFaceVisible(false);
+    try {
+      // Audio processing constraints deliberately disabled: Chrome's default
+      // getUserMedia audio track applies automatic gain control, which
+      // actively normalizes perceived volume -- verified via isolated testing
+      // to fluctuate a genuinely loud, constant signal down into the 0.12-0.34
+      // RMS range instead of holding steady around 0.65, undermining the
+      // HIGH_NOISE threshold in useProctoringCapture.ts. Disabling it gives
+      // the RMS analysis the true, unprocessed volume level.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      deviceStreamRef.current = stream;
+      if (previewVideoRef.current) {
+        previewVideoRef.current.srcObject = stream;
+      }
+      // Store immediately so the dashboard reuses this exact grant instead
+      // of prompting the browser for permission a second time.
+      setMediaStream(stream);
+      setPermissionState("granted");
+    } catch (err) {
+      console.error("Camera/mic permission denied:", err);
+      setPermissionState("denied");
+    }
+  };
+
+  // If the candidate grants camera/mic access but abandons this page before
+  // actually starting the exam (closes the tab, navigates back), the stream
+  // must not keep running -- stop it on unmount unless they made it through.
+  const deviceCheckPassedRef = useRef(false);
+  useEffect(() => {
+    deviceCheckPassedRef.current = deviceCheckPassed;
+  }, [deviceCheckPassed]);
+  useEffect(() => {
+    return () => {
+      if (!deviceCheckPassedRef.current && deviceStreamRef.current) {
+        deviceStreamRef.current.getTracks().forEach((t) => t.stop());
+        setMediaStream(null);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Kick off the permission prompt as soon as the Device Check step appears.
+  useEffect(() => {
+    if (needsDeviceCheck && permissionState === "idle") {
+      requestDeviceAccess();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsDeviceCheck]);
+
+  // Poll for "is at least one face visible" while the device check is
+  // showing -- a one-time gate, not the dashboard's continuous monitoring.
+  useEffect(() => {
+    if (permissionState !== "granted" || !needsDeviceCheck) return;
+    let cancelled = false;
+    let landmarker: FaceLandmarker | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    (async () => {
+      try {
+        const fileset = await FilesetResolver.forVisionTasks(PROCTORING_WASM_BASE_URL);
+        landmarker = await FaceLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: PROCTORING_MODEL_ASSET_URL, delegate: "CPU" },
+          runningMode: "VIDEO",
+          numFaces: 2,
+        });
+        if (cancelled) {
+          landmarker.close();
+          return;
+        }
+        interval = setInterval(() => {
+          const video = previewVideoRef.current;
+          if (cancelled || !video || !landmarker || video.readyState < 2) return;
+          // detectForVideo can throw transiently (e.g. a non-monotonic
+          // timestamp if this tick races the effect's own teardown/setup,
+          // which React's dev-mode Strict Mode double-invoke can trigger) --
+          // never let one bad detection tick crash this screen. Skip and
+          // retry on the next tick instead.
+          try {
+            const result = landmarker.detectForVideo(video, performance.now());
+            setFaceVisible((result.faceLandmarks || []).length >= 1);
+          } catch (err) {
+            console.error("Face check tick failed, will retry:", err);
+          }
+        }, 700);
+      } catch (err) {
+        console.error("Failed to load face check model:", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+      landmarker?.close();
+    };
+  }, [permissionState, needsDeviceCheck]);
 
   const form = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
@@ -59,6 +201,8 @@ export default function ExamLoginPage() {
           pin: values.pin,
           collegeRollNumber: data.collegeRollNumber
         });
+        setWebcamProctoringEnabled(!!data.webcamProctoringEnabled);
+        setExamStartAt(data.examStart || null);
       } else if (res.status === 403) {
         const errorMsg = data.error?.toLowerCase() || "";
         if (errorMsg.includes("opens on") || errorMsg.includes("scheduled")) {
@@ -278,6 +422,138 @@ export default function ExamLoginPage() {
                  </CardFooter>
                </Card>
             )}
+          </motion.div>
+        ) : needsDeviceCheck ? (
+          <motion.div
+            key="device-check"
+            initial={{ opacity: 0, scale: 0.95, filter: "blur(4px)" }}
+            animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="w-full max-w-md z-10"
+          >
+            <Card className="border-primary/20 bg-card/60 backdrop-blur-3xl shadow-2xl relative overflow-hidden">
+              <div className="absolute inset-x-0 top-0 h-1 bg-primary animate-pulse-slow" />
+
+              <CardHeader className="pt-10 pb-4 text-center">
+                <Video className="h-12 w-12 text-primary mx-auto mb-4 opacity-80" />
+                <CardTitle className="text-2xl font-medium">Device Check</CardTitle>
+                <CardDescription className="text-muted-foreground mt-2">
+                  We need your camera and microphone before the exam starts. Make sure your face is clearly visible in the frame.
+                </CardDescription>
+              </CardHeader>
+
+              {permissionState === "denied" ? (
+                <>
+                  <CardContent className="px-8 pb-4 space-y-4">
+                    <div className="aspect-video rounded-xl border border-destructive/30 bg-destructive/5 flex items-center justify-center">
+                      <XCircle className="h-10 w-10 text-destructive" />
+                    </div>
+                    <div className="bg-destructive/5 border border-destructive/20 rounded-xl p-4 text-sm text-muted-foreground">
+                      Camera and microphone access are required to continue. This drive has webcam proctoring enabled -- please allow
+                      access in your browser&apos;s site settings, then retry.
+                    </div>
+                  </CardContent>
+                  <CardFooter className="pb-8">
+                    <Button variant="outline" className="w-full h-11" onClick={requestDeviceAccess}>
+                      Retry Permission
+                    </Button>
+                  </CardFooter>
+                </>
+              ) : (
+                <>
+                  <CardContent className="px-8 pb-4 space-y-4">
+                    <div className="relative aspect-video rounded-xl border border-border/50 bg-black overflow-hidden">
+                      <video ref={previewVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+                      {permissionState === "checking" && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+                          <Loader2 className="h-8 w-8 text-muted-foreground animate-spin" />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-sm">
+                        {permissionState === "granted" ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        ) : (
+                          <Circle className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <span className="flex-1 text-foreground/80">Camera detected</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        {permissionState === "granted" ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        ) : (
+                          <Circle className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <span className="flex-1 text-foreground/80">Microphone detected</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        {faceVisible ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        ) : (
+                          <Circle className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <span className="flex-1 text-foreground/80">Face visible</span>
+                      </div>
+                    </div>
+
+                    <Label className="flex items-start gap-3 p-4 rounded-xl border border-primary/20 bg-primary/5 cursor-pointer">
+                      <Checkbox
+                        checked={consentChecked}
+                        onCheckedChange={(v) => setConsentChecked(!!v)}
+                        className="mt-0.5 border-primary/50"
+                      />
+                      <span className="text-xs text-muted-foreground leading-relaxed">
+                        <span className="block text-[10px] font-bold uppercase tracking-widest text-primary mb-1">
+                          Separate consent — biometric monitoring
+                        </span>
+                        I consent to my webcam and microphone being used for periodic proctoring snapshots during this exam.
+                        Snapshots are retained for review and deleted afterward. This consent is specific to biometric
+                        monitoring and is separate from the exam integrity policy.
+                      </span>
+                    </Label>
+                  </CardContent>
+                  <CardFooter className="pb-8">
+                    <Button
+                      className="w-full h-12 text-base"
+                      disabled={permissionState !== "granted" || !faceVisible || !consentChecked}
+                      onClick={() => setDeviceCheckPassed(true)}
+                    >
+                      Continue to Exam
+                    </Button>
+                  </CardFooter>
+                </>
+              )}
+            </Card>
+          </motion.div>
+        ) : isWaitingForStart ? (
+          <motion.div
+            key="waiting-room"
+            initial={{ opacity: 0, scale: 0.95, filter: "blur(4px)" }}
+            animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="w-full max-w-md z-10"
+          >
+            <Card className="border-primary/20 bg-card/60 backdrop-blur-3xl shadow-2xl relative overflow-hidden">
+              <div className="absolute inset-x-0 top-0 h-1 bg-primary animate-pulse-slow" />
+              <CardHeader className="pt-10 pb-4 text-center">
+                <Clock className="h-12 w-12 text-primary mx-auto mb-4 opacity-80" />
+                <CardTitle className="text-2xl font-medium">You&apos;re All Set</CardTitle>
+                <CardDescription className="text-muted-foreground mt-2 px-4">
+                  You&apos;re signed in and ready. Your exam hasn&apos;t opened yet -- sit tight, this
+                  screen moves on automatically. No need to log in again.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="px-8 pb-10 flex flex-col items-center gap-2">
+                <p className="text-5xl font-mono font-bold text-primary tabular-nums">
+                  {examStartAt ? formatCountdown(examStartAt, nowTick) : "--:--"}
+                </p>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">
+                  Time until exam opens
+                </p>
+              </CardContent>
+            </Card>
           </motion.div>
         ) : (
           <motion.div

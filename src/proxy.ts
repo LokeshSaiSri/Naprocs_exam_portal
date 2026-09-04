@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Bypass exact login routes
@@ -12,7 +12,7 @@ export async function middleware(request: NextRequest) {
 
   // Intercepting Generic Admin Constraints
   if (pathname.startsWith('/admin') || pathname.startsWith('/api/admin')) {
-    
+
     const token = request.cookies.get('adminAuthToken')?.value;
 
     if (!token) {
@@ -24,13 +24,13 @@ export async function middleware(request: NextRequest) {
       if (!secretPassphrase) throw new Error("Missing generic environment validation constraints");
 
       const secret = new TextEncoder().encode(secretPassphrase);
-      
+
       // Execute strict JWT parsing utilizing native JOSE cryptography mapping
       await jwtVerify(token, secret);
-      
+
       return NextResponse.next();
     } catch (error) {
-      console.error("Middleware Payload Exception:", error);
+      console.error("Proxy Payload Exception:", error);
       return handleUnauthorized(request);
     }
   }

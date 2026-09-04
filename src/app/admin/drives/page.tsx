@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { 
-  Plus, Briefcase, Calendar, Clock, ShieldCheck, Trash2, ArrowRight, ExternalLink, Link as LinkIcon, AlertTriangle, CheckCircle2, Settings2
+import {
+  Plus, Briefcase, Calendar, Clock, ShieldCheck, Trash2, ArrowRight, ExternalLink, Link as LinkIcon, AlertTriangle, CheckCircle2, Settings2, Video
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
@@ -35,6 +35,7 @@ export default function DrivesManagement() {
     passingCutoff: 70,
     proctoringSeverity: "MEDIUM",
     maxCheatWarnings: 3,
+    webcamProctoringEnabled: false,
     mcqCount: 15,
     codingCount: 2,
     shuffleQuestions: true,
@@ -81,6 +82,7 @@ export default function DrivesManagement() {
       passingCutoff: drive.passingCutoff,
       proctoringSeverity: drive.proctoringSeverity,
       maxCheatWarnings: drive.maxCheatWarnings,
+      webcamProctoringEnabled: drive.webcamProctoringEnabled ?? false,
       mcqCount: drive.mcqCount,
       codingCount: drive.codingCount,
       shuffleQuestions: drive.shuffleQuestions,
@@ -96,9 +98,9 @@ export default function DrivesManagement() {
   const handleOpenCreate = () => {
     setEditingDriveId(null);
     setFormData({
-      title: "", slug: "", examDuration: 60, passingCutoff: 70, 
-      proctoringSeverity: "MEDIUM", maxCheatWarnings: 3, 
-      mcqCount: 15, codingCount: 2, shuffleQuestions: true, shuffleOptions: true, 
+      title: "", slug: "", examDuration: 60, passingCutoff: 70,
+      proctoringSeverity: "MEDIUM", maxCheatWarnings: 3, webcamProctoringEnabled: false,
+      mcqCount: 15, codingCount: 2, shuffleQuestions: true, shuffleOptions: true,
       regStart: "", regEnd: "", examStart: "", examEnd: ""
     });
     setShowCreateDialog(true);
@@ -195,7 +197,7 @@ export default function DrivesManagement() {
           >
               <Plus className="h-5 w-5 mr-2" /> Initialize New Flow
           </Button>
-          <DialogContent className="max-w-2xl bg-card/95 backdrop-blur-xl border-border/40 max-h-[90vh] overflow-y-auto">
+          <DialogContent className="max-w-2xl bg-card/95 backdrop-blur-xl border-border/40 max-h-[90vh] overflow-y-auto custom-scrollbar">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold flex items-center gap-2">
                 <Briefcase className="h-6 w-6 text-primary" /> {editingDriveId ? "Update Pipeline" : "Create Recruitment Drive"}
@@ -305,6 +307,17 @@ export default function DrivesManagement() {
                       className="bg-input/20 h-11"
                     />
                  </div>
+              </div>
+
+              <div className="flex items-center justify-between p-4 rounded-2xl bg-background/40 border border-border/20">
+                 <div className="space-y-1">
+                    <p className="text-xs font-bold uppercase tracking-tight">Webcam Proctoring</p>
+                    <p className="text-[10px] text-muted-foreground font-medium">Camera &amp; mic consent required before exam start</p>
+                 </div>
+                 <Switch
+                    checked={formData.webcamProctoringEnabled}
+                    onCheckedChange={(v) => setFormData({ ...formData, webcamProctoringEnabled: !!v })}
+                 />
               </div>
 
               <DialogFooter className="pt-4 border-t border-border/40">
@@ -418,18 +431,30 @@ export default function DrivesManagement() {
                         </div>
                         <div className="bg-muted/30 p-2.5 rounded-xl border border-border/40 text-center space-y-0.5">
                            <p className="text-[9px] font-bold text-muted-foreground uppercase">Severity</p>
-                           <p className="text-[10px] font-bold text-foreground">{drive.proctoringSeverity}</p>
+                           <p className="text-[10px] font-bold text-foreground flex items-center justify-center gap-1">
+                              {drive.proctoringSeverity}
+                              {drive.webcamProctoringEnabled && (
+                                 <Video className="h-2.5 w-2.5 text-primary" aria-label="Webcam proctoring enabled" />
+                              )}
+                           </p>
                         </div>
                     </div>
                   </CardContent>
 
-                  <CardFooter className="pt-2 pb-6 flex gap-3">
+                  <CardFooter className="pt-2 pb-6 flex gap-2">
                      <Link href={`/admin/questions?driveId=${drive._id}`} className="flex-1">
                         <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2 relative overflow-hidden transition-all group shadow-sm">
                            <Plus className="h-3.5 w-3.5" /> Bank
                            <div className="absolute inset-0 bg-primary/10 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
                         </Button>
                      </Link>
+                     {drive.webcamProctoringEnabled && (
+                        <Link href={`/admin/proctoring?driveId=${drive._id}`} className="flex-1">
+                           <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2">
+                              <Video className="h-3.5 w-3.5" /> Proctoring
+                           </Button>
+                        </Link>
+                     )}
                      <Link href={`/admin/leaderboard?driveId=${drive._id}`} className="flex-1">
                         <Button className="w-full h-10 gap-2 font-semibold shadow-lg shadow-primary/20 bg-primary">
                            Results <ArrowRight className="h-3.5 w-3.5" />
@@ -457,9 +482,9 @@ export default function DrivesManagement() {
                   <span className="font-bold text-destructive">This action cannot be undone.</span>
                </DialogDescription>
             </DialogHeader>
-            <DialogFooter className="sm:justify-center pb-2 pt-6 gap-3">
-               <Button variant="outline" className="w-full h-12 border-border/50" onClick={() => setPurgeTarget(null)}>Cancel</Button>
-               <Button variant="destructive" className="w-full h-12 font-bold shadow-2xl shadow-destructive/20" onClick={() => handlePurge(purgeTarget as string)} disabled={isPurging}>
+            <DialogFooter className="sm:justify-center pb-2 pt-6 gap-3 bg-destructive/5 border-destructive/20">
+               <Button variant="outline" className="flex-1 min-w-0 h-12 border-border/50" onClick={() => setPurgeTarget(null)}>Cancel</Button>
+               <Button variant="destructive" className="flex-1 min-w-0 h-12 font-bold shadow-2xl shadow-destructive/20" onClick={() => handlePurge(purgeTarget as string)} disabled={isPurging}>
                   {isPurging ? "Purging Matrix..." : "Purge Everything"}
                </Button>
             </DialogFooter>

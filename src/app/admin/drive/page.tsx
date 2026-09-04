@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
-import { Download, GripVertical, FileText, CheckCircle2, User, Cpu, MessageSquare, Code, Presentation, AlertTriangle } from "lucide-react";
+import { Download, GripVertical, FileText, CheckCircle2, User, Cpu, MessageSquare, Code, Presentation, AlertTriangle, Video, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -22,6 +22,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PROCTORING_FLAG_BY_EVENT_TYPE } from "@/lib/proctoringFlags";
+import { ProctoringLightbox } from "@/components/proctoring/ProctoringLightbox";
+
+// Matches the admin/proctoring overview page's poll cadence.
+const ADMIN_POLL_INTERVAL_MS = 30_000;
 
 // Admin Kanban Types
 type KanbanColumn = { id: string; dbStage: string; title: string; hasExport?: boolean; exportLabel?: string; };
@@ -69,6 +74,12 @@ export default function DriveKanbanBoard() {
   const [examReport, setExamReport] = useState<any[] | null>(null);
   const [sessionInfo, setSessionInfo] = useState<any | null>(null);
   const [isLoadingReport, setIsLoadingReport] = useState(false);
+
+  // Proctoring Data
+  const [proctoringEvents, setProctoringEvents] = useState<any[] | null>(null);
+  const [isLoadingProctoring, setIsLoadingProctoring] = useState(false);
+  const [isPurgingProctoring, setIsPurgingProctoring] = useState(false);
+  const [proctoringLightboxIndex, setProctoringLightboxIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setIsMounted(true);
@@ -162,6 +173,18 @@ export default function DriveKanbanBoard() {
     }
   };
 
+  const fetchProctoringEvents = async (candidateId: string) => {
+    try {
+       const res = await fetch(`/api/admin/candidates/${candidateId}/proctoring`);
+       const data = await res.json();
+       if (data.success) {
+          setProctoringEvents(data.events);
+       }
+    } catch (e) {
+      console.error("Proctoring gallery fetch failure", e);
+    }
+  };
+
   const handleOpenSheet = async (c: Candidate) => {
     setSelectedCandidate(c);
     setActiveTechNotes(c.techNotes || "");
@@ -172,6 +195,7 @@ export default function DriveKanbanBoard() {
     setHrMission(c.scoreMission || 70);
     setExamReport(null);
     setSessionInfo(null);
+    setProctoringEvents(null);
 
     // Dynamic fetch of the exam results for the interview transparency
     setIsLoadingReport(true);
@@ -186,6 +210,33 @@ export default function DriveKanbanBoard() {
       console.error("Exam Report fetch failure", e);
     } finally {
       setIsLoadingReport(false);
+    }
+
+    setIsLoadingProctoring(true);
+    await fetchProctoringEvents(c._id);
+    setIsLoadingProctoring(false);
+  };
+
+  // Live-ish gallery: poll every 30s while the dialog is open, instead of
+  // requiring the admin to close and reopen it to see new snapshots. Paused
+  // while the lightbox is open, since events sort newest-first and a
+  // mid-view refetch would shift indices and jump the viewer.
+  useEffect(() => {
+    if (!selectedCandidate || proctoringLightboxIndex !== null) return;
+    const interval = setInterval(() => fetchProctoringEvents(selectedCandidate._id), ADMIN_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [selectedCandidate, proctoringLightboxIndex]);
+
+  const handlePurgeProctoring = async () => {
+    if (!selectedCandidate) return;
+    setIsPurgingProctoring(true);
+    try {
+       const res = await fetch(`/api/admin/candidates/${selectedCandidate._id}/proctoring`, { method: 'DELETE' });
+       if (res.ok) setProctoringEvents([]);
+    } catch (e) {
+      console.error("Proctoring purge failure", e);
+    } finally {
+      setIsPurgingProctoring(false);
     }
   };
 
@@ -356,7 +407,15 @@ export default function DriveKanbanBoard() {
       </div>
 
       {/* Candidate Evaluation Dashboard: Structural Modal Implementation */}
-      <Dialog open={!!selectedCandidate} onOpenChange={(open) => !open && setSelectedCandidate(null)}>
+      <Dialog
+        open={!!selectedCandidate}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedCandidate(null);
+            setProctoringLightboxIndex(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-[95vw] lg:max-w-[90vw] h-[92vh] p-0 border border-border/40 bg-background shadow-2xl overflow-hidden flex flex-col focus-visible:outline-none">
           {selectedCandidate && (
             <div className="grid grid-cols-1 lg:grid-cols-12 h-full overflow-hidden">
@@ -444,6 +503,9 @@ export default function DriveKanbanBoard() {
                         </TabsTrigger>
                         <TabsTrigger value="cbt" className="flex-1 h-full rounded-lg text-[10px] font-bold data-[state=active]:bg-amber-500 data-[state=active]:text-white transition-all gap-2 uppercase tracking-tight">
                           <CheckCircle2 className="h-4 w-4" /> Insights
+                        </TabsTrigger>
+                        <TabsTrigger value="proctoring" className="flex-1 h-full rounded-lg text-[10px] font-bold data-[state=active]:bg-accent data-[state=active]:text-accent-foreground transition-all gap-2 uppercase tracking-tight">
+                          <Video className="h-4 w-4" /> Proctoring
                         </TabsTrigger>
                       </TabsList>
                       
@@ -605,6 +667,74 @@ export default function DriveKanbanBoard() {
                             </div>
                           </div>
                         </TabsContent>
+
+                        <TabsContent value="proctoring" className="space-y-6 mt-0 focus-visible:outline-none focus:outline-none">
+                           <div className="space-y-4 p-6 rounded-2xl border border-accent/20 bg-accent/[0.03]">
+                              <div className="flex justify-between items-center mb-2">
+                                <h4 className="text-[10px] font-bold uppercase tracking-widest text-accent italic">Webcam &amp; Mic Proctoring</h4>
+                                <Badge variant="secondary" className="bg-accent/10 text-accent text-[9px] uppercase font-bold">Evidence Log</Badge>
+                              </div>
+
+                              {isLoadingProctoring ? (
+                                <div className="h-40 flex items-center justify-center animate-pulse text-accent/50 text-xs font-mono">
+                                   Retrieving proctoring snapshots...
+                                </div>
+                              ) : proctoringEvents && proctoringEvents.length > 0 ? (
+                                <>
+                                  <div className="flex items-center justify-between pb-4 border-b border-accent/10">
+                                     <p className="text-xs text-muted-foreground">
+                                        <span className="font-bold text-foreground">{proctoringEvents.length}</span> snapshots ·{" "}
+                                        <span className="font-bold text-destructive">{proctoringEvents.filter(e => e.eventType !== 'SNAPSHOT').length}</span> flags
+                                     </p>
+                                     <Button
+                                       variant="destructive"
+                                       size="sm"
+                                       disabled={isPurgingProctoring}
+                                       onClick={handlePurgeProctoring}
+                                       className="h-8 text-[10px] font-bold uppercase tracking-widest gap-1.5"
+                                     >
+                                       <Trash2 className="h-3 w-3" /> {isPurgingProctoring ? "Purging..." : "Purge Snapshots"}
+                                     </Button>
+                                  </div>
+
+                                  <div className="grid grid-cols-3 gap-3 max-h-[460px] overflow-y-auto pr-2 custom-scrollbar">
+                                     {proctoringEvents.map((ev) => {
+                                        const flag = PROCTORING_FLAG_BY_EVENT_TYPE[ev.eventType];
+                                        const isFlag = !!flag;
+                                        const Icon = flag?.icon || Video;
+                                        return (
+                                          <button
+                                            key={ev._id}
+                                            type="button"
+                                            onClick={() => setProctoringLightboxIndex(proctoringEvents.indexOf(ev))}
+                                            className={`relative aspect-[4/3] rounded-lg overflow-hidden border-2 bg-black/40 cursor-zoom-in transition-transform hover:scale-[1.03] ${isFlag ? 'border-destructive' : 'border-border/30'}`}
+                                          >
+                                             {ev.snapshotUrl ? (
+                                               // eslint-disable-next-line @next/next/no-img-element
+                                               <img src={ev.snapshotUrl} alt={flag?.label || "Snapshot"} className="w-full h-full object-cover" />
+                                             ) : (
+                                               <div className="w-full h-full flex items-center justify-center text-muted-foreground/40">
+                                                  <Video className="h-6 w-6" />
+                                               </div>
+                                             )}
+                                             <span className={`absolute top-1 left-1 flex items-center gap-1 text-[8px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-black/60 ${isFlag ? 'text-destructive' : 'text-foreground/80'}`}>
+                                                <Icon className="h-2.5 w-2.5" /> {flag?.label || "Snapshot"}
+                                             </span>
+                                             <span className="absolute bottom-1 right-1 text-[8px] font-mono text-foreground/70 bg-black/50 px-1 rounded">
+                                                {new Date(ev.createdAt).toLocaleTimeString()}
+                                             </span>
+                                          </button>
+                                        );
+                                     })}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="p-8 text-center text-muted-foreground text-xs italic">
+                                   No webcam proctoring data for this candidate -- either the drive doesn&apos;t have webcam proctoring enabled, or the session hasn&apos;t produced any snapshots yet.
+                                </div>
+                              )}
+                           </div>
+                        </TabsContent>
                       </div>
                    </Tabs>
                 </div>
@@ -633,6 +763,14 @@ export default function DriveKanbanBoard() {
           )}
         </DialogContent>
       </Dialog>
+
+      {proctoringLightboxIndex !== null && proctoringEvents && (
+        <ProctoringLightbox
+          events={proctoringEvents}
+          startIndex={proctoringLightboxIndex}
+          onClose={() => setProctoringLightboxIndex(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,37 +1,58 @@
 import { NextResponse } from "next/server";
-import connectToDatabase from "@/lib/mongodb";
-import ExamSession from "@/models/ExamSession";
-import Candidate from "@/models/Candidate";
+import supabase from "@/lib/supabase";
 
 export async function POST(req: Request) {
   try {
-    await connectToDatabase();
-
     const body = await req.json();
-    const { sessionId, candidateId, incomingResponses } = body;
+    const { sessionId, candidateId, incomingResponses, cheatWarnings } = body;
 
     if (!sessionId || !candidateId || !incomingResponses) {
       return NextResponse.json({ error: "Invalid sync ping structure" }, { status: 400 });
     }
 
-    // Ping the lightweight update
-    const syncedSession = await ExamSession.findByIdAndUpdate(
-      sessionId,
-      { $set: { responses: incomingResponses } },
-      { new: true, runValidators: false }
-    );
+    // Ping the lightweight update -- scoped to IN_PROGRESS so a sync ping
+    // that lands after the candidate has already submitted can't clobber
+    // the authoritative, server-graded responses written by /api/exam/submit
+    // with a stale client-side snapshot (this raced with a real candidate's
+    // final submit and erased her graded coding result -- see
+    // SUPABASE_MIGRATION.md). Once COMPLETED/TERMINATED, this is a no-op.
+    const { data: syncedSession, error: syncError } = await supabase
+      .from("exam_sessions")
+      .update({ responses: incomingResponses })
+      .eq("id", sessionId)
+      .eq("status", "IN_PROGRESS")
+      .select()
+      .maybeSingle();
+    if (syncError) throw syncError;
 
     if (!syncedSession) {
-      return NextResponse.json({ error: "Session mapping fault" }, { status: 404 });
+      // Either the session doesn't exist, or (far more commonly) it just
+      // isn't IN_PROGRESS anymore -- the candidate already submitted. Not
+      // an error: the heartbeat below still records last-active for the
+      // (now-finished) session, and there's nothing left to sync.
+      const { error: heartbeatOnlyError } = await supabase
+        .from("candidates")
+        .update({ last_active_at: new Date().toISOString() })
+        .eq("id", candidateId);
+      if (heartbeatOnlyError) throw heartbeatOnlyError;
+      return NextResponse.json({ success: true, timestamp: Date.now(), skipped: "session not in progress" }, { status: 200 });
     }
 
-    // Update Heartbeat to maintain concurrency lock
-    await Candidate.findByIdAndUpdate(candidateId, { 
-       $set: { lastActiveAt: new Date() } 
-    });
+    // Update Heartbeat to maintain concurrency lock, and persist any
+    // proctoring violation count immediately (not just on the next tick --
+    // this used to live only in client-side state and never reached the DB).
+    const candidateUpdate: Record<string, any> = { last_active_at: new Date().toISOString() };
+    if (typeof cheatWarnings === 'number') {
+      candidateUpdate.cheat_warnings = cheatWarnings;
+    }
+    const { error: heartbeatError } = await supabase
+      .from("candidates")
+      .update(candidateUpdate)
+      .eq("id", candidateId);
+    if (heartbeatError) throw heartbeatError;
 
     return NextResponse.json({ success: true, timestamp: Date.now() }, { status: 200 });
-    
+
   } catch (error: any) {
     console.error("Exam Sync Fault:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
