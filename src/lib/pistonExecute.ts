@@ -37,9 +37,14 @@ async function executeOnce(language: string, code: string, stdin: string, timeou
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (process.env.PISTON_API_KEY) {
+      headers["Authorization"] = `Bearer ${process.env.PISTON_API_KEY}`;
+    }
+
     const res = await fetch(`${PISTON_API_URL}/api/v2/execute`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         language: config.language,
         version: config.version,
