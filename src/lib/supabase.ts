@@ -17,7 +17,8 @@ declare global {
   var supabaseClientCache: SupabaseClient | undefined;
 }
 
-// Cache across hot-reloads in dev (mirrors the pattern in src/lib/mongodb.ts) —
+// Cache across hot-reloads in dev (mirrors the singleton-cache pattern used
+// for the old Mongoose client, since removed post-Supabase-migration) —
 // avoids spinning up a new client on every module reload.
 const supabase =
   global.supabaseClientCache ??

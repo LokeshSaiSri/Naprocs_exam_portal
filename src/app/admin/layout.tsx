@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Library, Activity, Settings, LogOut, Users, Briefcase, Video } from 'lucide-react';
+import { LayoutDashboard, Library, Activity, Settings, LogOut, Users, Briefcase } from 'lucide-react';
 import { ReactNode } from 'react';
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
@@ -47,11 +47,11 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             href="/admin/control-center" 
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive('/admin/control-center') ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'hover:bg-muted/50 text-foreground/80 hover:text-foreground'}`}
           >
-            <Activity className="h-4 w-4" /> Live Control Center
+            <Activity className="h-4 w-4" /> Live Monitoring
             <span className="ml-auto inline-flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
           </Link>
-          <Link 
-            href="/admin/drives" 
+          <Link
+            href="/admin/drives"
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive('/admin/drives') ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'hover:bg-muted/50 text-foreground/80 hover:text-foreground'}`}
           >
             <Briefcase className="h-4 w-4" /> Recruitment Drives
@@ -61,12 +61,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive('/admin/drive') ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'hover:bg-muted/50 text-foreground/80 hover:text-foreground'}`}
           >
             <LayoutDashboard className="h-4 w-4" /> Live Kanban
-          </Link>
-          <Link
-            href="/admin/proctoring"
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive('/admin/proctoring') ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'hover:bg-muted/50 text-foreground/80 hover:text-foreground'}`}
-          >
-            <Video className="h-4 w-4" /> Proctoring
           </Link>
           <Link
             href="/admin/leaderboard"

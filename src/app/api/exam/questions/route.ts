@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase } from "@/lib/caseConvert";
+import { ensureSessionDeadline, sweepIfExpired } from "@/lib/examTiming";
 
 // Rulebook rule #7: Mongo's { $sample: { size: n } } aggregation replaced with
 // an in-app random sample. Question banks per drive are small (tens, not
@@ -45,6 +46,22 @@ export async function GET(req: Request) {
       .from("exam_sessions").select("*").eq("candidate_id", candidateId).eq("status", "IN_PROGRESS").maybeSingle();
     if (sessionLookupError) throw sessionLookupError;
 
+    // Lazy-sweep: if this "in progress" session actually ran past its
+    // deadline (browser was closed, tab was backgrounded and throttled past
+    // the grace window, etc.), finalize it now rather than silently handing
+    // the candidate a fresh full-duration attempt on reload. Re-attempts are
+    // an explicit admin action (Live Monitoring "Re-attempt" button), never
+    // an automatic side effect of refreshing a dead tab.
+    if (existingSession) {
+      const { swept } = await sweepIfExpired(existingSession);
+      if (swept) {
+        return NextResponse.json(
+          { error: "Your exam session has expired.", expired: true },
+          { status: 410 }
+        );
+      }
+    }
+
     let session = existingSession;
     let questionsToDeliver: any[] = [];
 
@@ -69,13 +86,22 @@ export async function GET(req: Request) {
 
       questionsToDeliver = [...poolMcqs, ...poolCoding];
 
+      // Compute the authoritative deadline once, at creation, rather than
+      // leaving the client to (re)derive it from the drive's shared
+      // exam_end on every mount -- see src/lib/examTiming.ts.
+      const startTime = new Date();
+      const durationMs = (drive.exam_duration || 0) * 60_000;
+      const driveEndMs = drive.exam_end ? new Date(drive.exam_end).getTime() : Infinity;
+      const deadline = new Date(Math.min(startTime.getTime() + durationMs, driveEndMs));
+
       // Store the specific IDs in the session so they don't change on refresh
       const { data: newSession, error: createSessionError } = await supabase
         .from("exam_sessions")
         .insert({
           candidate_id: candidateId,
           status: "IN_PROGRESS",
-          start_time: new Date().toISOString(),
+          start_time: startTime.toISOString(),
+          deadline: deadline.toISOString(),
           responses: {},
           question_ids: questionsToDeliver.map((q) => q.id),
         })
@@ -84,6 +110,12 @@ export async function GET(req: Request) {
       if (createSessionError) throw createSessionError;
       session = newSession;
     } else {
+      // Self-heal: legacy sessions created before the `deadline` column
+      // existed won't have one yet -- compute and persist it now so the
+      // client always gets an authoritative value to seed its countdown
+      // from, on this load and every future one.
+      await ensureSessionDeadline(session, drive);
+
       // RESUME: Fetch the exact questions already picked for this student
       const pickedIds: string[] = session.question_ids || [];
 
@@ -175,7 +207,8 @@ export async function GET(req: Request) {
       settings: resolvedSettings, // Return merged settings for frontend consumption
       sessionId: session.id,
       currentStage: session.current_stage || 'MCQ',
-      existingResponses: session.responses || {}
+      existingResponses: session.responses || {},
+      deadline: session.deadline
     }, { status: 200 });
 
   } catch (error: any) {

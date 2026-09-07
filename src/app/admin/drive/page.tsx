@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import { Download, GripVertical, FileText, CheckCircle2, User, Cpu, MessageSquare, Code, Presentation, AlertTriangle, Video, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -54,7 +55,8 @@ const COLUMNS: KanbanColumn[] = [
   { id: "col-4", dbStage: "SELECTED", title: "Selected / Offered", hasExport: true, exportLabel: "Final Offers" },
 ];
 
-export default function DriveKanbanBoard() {
+function DriveKanbanBoardInner() {
+  const searchParams = useSearchParams();
   const [isMounted, setIsMounted] = useState(false);
   const [columns, setColumns] = useState<Record<string, Candidate[]>>({ "col-1": [], "col-2": [], "col-3": [], "col-4": [] });
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
@@ -83,8 +85,39 @@ export default function DriveKanbanBoard() {
 
   useEffect(() => {
     setIsMounted(true);
-    fetchCandidates();
   }, []);
+
+  // Populate the "Batch Pipeline" dropdown -- previously never fetched, so
+  // it silently rendered nothing but "All Recruitment Batches" no matter how
+  // many drives existed.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/drives');
+        const data = await res.json();
+        if (data.success) {
+          setDrives(data.drives || []);
+          // Honor ?driveId= from a link (e.g. Live Monitoring's "Pipeline"
+          // button, or Recruitment Drives' card) if it points at a real drive.
+          const driveIdParam = searchParams.get('driveId');
+          if (driveIdParam && (data.drives || []).some((d: any) => d._id === driveIdParam)) {
+            setSelectedDriveId(driveIdParam);
+          }
+        }
+      } catch (e) {
+        console.error("Drive list fetch failure", e);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-fetch whenever the selected batch changes -- previously fetchCandidates
+  // only ran once on mount, so switching the dropdown never actually filtered
+  // anything even after the drive list above was wired up.
+  useEffect(() => {
+    fetchCandidates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDriveId]);
 
   const fetchCandidates = async () => {
     try {
@@ -313,7 +346,11 @@ export default function DriveKanbanBoard() {
 
         <div className="flex items-center gap-3 bg-card/40 backdrop-blur-md p-4 rounded-xl border border-border/40 w-fit mt-6">
             <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mr-2">Batch Pipeline:</p>
-            <Select value={selectedDriveId} onValueChange={(val: any) => setSelectedDriveId(val)}>
+            <Select
+               items={[{ value: "all", label: "All Recruitment Batches" }, ...drives.map(d => ({ value: d._id, label: d.title }))]}
+               value={selectedDriveId}
+               onValueChange={(val: any) => setSelectedDriveId(val)}
+            >
                <SelectTrigger className="w-[280px] h-9 text-xs font-semibold">
                   <SelectValue placeholder="All Recruitment Batches" />
                </SelectTrigger>
@@ -772,5 +809,13 @@ export default function DriveKanbanBoard() {
         />
       )}
     </div>
+  );
+}
+
+export default function DriveKanbanBoard() {
+  return (
+    <Suspense fallback={null}>
+      <DriveKanbanBoardInner />
+    </Suspense>
   );
 }

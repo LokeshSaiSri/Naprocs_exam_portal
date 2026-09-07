@@ -42,6 +42,13 @@ const MONACO_LANGUAGE_MAP: Record<string, string> = {
   cpp: "cpp",
 };
 
+// Mirrors the EndReason union in src/lib/examTiming.ts (minus
+// ABANDONED_TIMEOUT, which only the server-side lazy sweep ever assigns).
+// Threaded through handleViolationSubmit/handleSubmit into the submit POST
+// body so the server can finally record *why* a session ended, not just
+// that it did -- previously only a client-side console.warn.
+type SubmitReasonCode = 'MANUAL' | 'TIME_EXPIRED' | 'VIOLATION_HIGH_SEVERITY' | 'VIOLATION_MEDIUM_CAP';
+
 const LANGUAGE_STARTERS: Record<string, string> = {
   python: "# Read the input from stdin and print your answer to stdout.\nline = input()\n",
   java: "import java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        // Read the input from stdin and print your answer via System.out.println.\n    }\n}\n",
@@ -59,21 +66,28 @@ export default function ExamDashboard() {
   const candidateId = candidate?.id || "";
 
   // New Auto-Sync Hook Integration
-  const { 
-    questions, 
-    settings, 
-    responses, 
-    examStage, 
-    setExamStage, 
-    updateResponse, 
-    manualSync, 
-    isSyncing, 
-    recoveredSessionId 
+  const {
+    questions,
+    settings,
+    responses,
+    examStage,
+    setExamStage,
+    updateResponse,
+    manualSync,
+    isSyncing,
+    recoveredSessionId,
+    deadline,
+    sessionExpired
   } = useExamSync(candidateId, sessionId);
 
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(3600); 
-  const [timerInitialized, setTimerInitialized] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(3600);
+  // Wall-clock timestamp (ms) this candidate's session must end by --
+  // server-authoritative, computed once on the server and never recomputed
+  // client-side. Replaces the old client-derived "timerInitialized" model,
+  // which reseeded from scratch on every page load (see PROCTORING_RULEBOOK
+  // history / examTiming.ts for why).
+  const [deadlineTs, setDeadlineTs] = useState<number | null>(null);
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showStageTransitionModal, setShowStageTransitionModal] = useState(false);
   const [showFinalSubmitModal, setShowFinalSubmitModal] = useState(false);
@@ -129,24 +143,27 @@ export default function ExamDashboard() {
     setCurrentQuestionIndex(0);
   }, [examStage]);
 
-  // Initialize timer from settings with Hard Cutoff Enforcement
+  // Seed the wall-clock deadline from the server-authoritative value (see
+  // src/lib/examTiming.ts). This is what makes the countdown survive a
+  // refresh correctly: it's the candidate's own session.deadline, computed
+  // once at session creation, not re-derived from "now" on every mount.
   useEffect(() => {
-    if (settings?.examDuration && settings?.examEnd && !timerInitialized) {
-       const now = new Date();
-       const driveEnd = new Date(settings.examEnd);
-       const durationSeconds = settings.examDuration * 60;
-       
-       // Calculate remaining time until the drive window strictly closes
-       const remainingToGlobalEnd = Math.max(0, Math.floor((driveEnd.getTime() - now.getTime()) / 1000));
-       
-       // Timer should be the lesser of (Full Duration) and (Time left until Drive Ends)
-       // This ensures late-joiners only get the remaining window time.
-       const initialTime = Math.min(durationSeconds, remainingToGlobalEnd);
-       
-       setTimeLeft(initialTime);
-       setTimerInitialized(true);
+    if (deadline) {
+      setDeadlineTs(new Date(deadline).getTime());
     }
-  }, [settings, timerInitialized]);
+  }, [deadline]);
+
+  // Redirect out if the server's lazy sweep found this session already
+  // expired (abandoned past its deadline) before we ever got a deadline to
+  // seed a live countdown from.
+  useEffect(() => {
+    if (sessionExpired && !isSubmitted) {
+      alert("Your exam session has expired. Please contact your administrator.");
+      logout();
+      router.replace('/exam');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionExpired]);
 
   // Auth Context Check - STRICT ENFORCEMENT
   useEffect(() => {
@@ -161,7 +178,7 @@ export default function ExamDashboard() {
         if (settings?.proctoringSeverity === 'HIGH') {
            setIsTerminated(true);
            persistCheatWarning(1);
-           handleViolationSubmit("Tab Switch (Strict Violation)");
+           handleViolationSubmit("Tab Switch (Strict Violation)", 'VIOLATION_HIGH_SEVERITY');
         } else {
            incrementCheatWarning();
            persistCheatWarning(useExamStore.getState().cheatWarnings);
@@ -176,7 +193,7 @@ export default function ExamDashboard() {
           if (settings?.proctoringSeverity === 'HIGH') {
              setIsTerminated(true);
              persistCheatWarning(1);
-             handleViolationSubmit("Fullscreen Exit (Strict Violation)");
+             handleViolationSubmit("Fullscreen Exit (Strict Violation)", 'VIOLATION_HIGH_SEVERITY');
           } else {
              incrementCheatWarning();
              persistCheatWarning(useExamStore.getState().cheatWarnings);
@@ -227,7 +244,7 @@ export default function ExamDashboard() {
     if (canHardTerminate && settings?.proctoringSeverity === 'HIGH') {
       setIsTerminated(true);
       persistCheatWarning(1);
-      handleViolationSubmit(SUBMIT_REASONS[type]);
+      handleViolationSubmit(SUBMIT_REASONS[type], 'VIOLATION_HIGH_SEVERITY');
     } else {
       incrementCheatWarning();
       persistCheatWarning(useExamStore.getState().cheatWarnings);
@@ -264,25 +281,39 @@ export default function ExamDashboard() {
     [mediaStream]
   );
 
-  // Timer Implementation with Auto-Submit Watchdog
+  // Timer Implementation with Auto-Submit Watchdog. `setInterval` here is
+  // only the re-render trigger, never the source of truth for remaining
+  // time: each tick recomputes timeLeft from Date.now() against the
+  // server-issued deadlineTs, so a throttled/backgrounded tab (Chrome can
+  // drop a hidden tab's interval to ~1 execution/minute) still snaps to the
+  // true remaining time the instant it fires, instead of a drifted count.
   useEffect(() => {
-    const timer = setInterval(() => setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0)), 1000);
+    if (deadlineTs === null) return;
+    const tick = () => setTimeLeft(Math.max(0, Math.floor((deadlineTs - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [deadlineTs]);
 
   useEffect(() => {
-    // When time hits 0 and timer was fully initialized, trigger auto-submit
-    if (timerInitialized && timeLeft === 0 && !isSubmitted && !isSubmitting) {
+    // When time hits 0 and the deadline has actually been seeded, trigger auto-submit
+    if (deadlineTs !== null && timeLeft === 0 && !isSubmitted && !isSubmitting) {
        console.warn("DUE DATE REACHED: Initiating Auto-Submission sequence...");
-       handleViolationSubmit("Time Expired");
+       handleViolationSubmit("Time Expired", 'TIME_EXPIRED');
     }
-  }, [timeLeft, timerInitialized, isSubmitted, isSubmitting]);
+  }, [timeLeft, deadlineTs, isSubmitted, isSubmitting]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60).toString().padStart(2, "0");
     const s = (seconds % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
   };
+
+  // Intentional minimum-time-on-task gate: the final-submit button in the
+  // CODING stage stays disabled until at least half the exam's total
+  // duration has elapsed. examDuration is in minutes, timeLeft is in
+  // seconds, so this is examDuration*60/2 = examDuration*30.
+  const CODING_MIN_TIME_SECONDS = (settings?.examDuration || 0) * 30;
 
   /** 
    * HackerRank-Style Secure Evaluation Generator
@@ -351,9 +382,9 @@ export default function ExamDashboard() {
     `;
   };
 
-  const handleViolationSubmit = async (reason: string) => {
+  const handleViolationSubmit = async (reason: string, reasonCode: SubmitReasonCode = 'MANUAL') => {
      console.warn(`AUTO-SUBMIT: ${reason}`);
-     await handleSubmit(true);
+     await handleSubmit(true, undefined, reasonCode);
   };
 
   const runLocalTests = async () => {
@@ -394,7 +425,7 @@ export default function ExamDashboard() {
     }
   };
 
-  const handleSubmit = async (isViolation: boolean = false, forceStage?: 'MCQ' | 'CODING') => {
+  const handleSubmit = async (isViolation: boolean = false, forceStage?: 'MCQ' | 'CODING', reasonCode: SubmitReasonCode = 'MANUAL') => {
     if (isSubmitting) return;
     setIsSubmitting(true);
     
@@ -484,7 +515,8 @@ export default function ExamDashboard() {
           sessionId: recoveredSessionId || sessionId,
           candidateId,
           finalResponses: finalEvaluatedResponses,
-          stageAction: forceStage === 'MCQ' ? 'MCQ_SUBMIT' : 'FULL_SUBMIT'
+          stageAction: forceStage === 'MCQ' ? 'MCQ_SUBMIT' : 'FULL_SUBMIT',
+          reason: reasonCode
         })
       });
       
@@ -640,7 +672,7 @@ export default function ExamDashboard() {
              <Button variant="destructive" className="w-full h-12 font-bold shadow-2xl shadow-destructive/20" onClick={() => {
                 setShowWarningModal(false);
                 if (settings?.proctoringSeverity === 'MEDIUM' && cheatWarnings >= settings?.maxCheatWarnings) {
-                   handleViolationSubmit("Max Warnings Exceeded");
+                   handleViolationSubmit("Max Warnings Exceeded", 'VIOLATION_MEDIUM_CAP');
                 }
              }}>
                 Acknowledge & Resume
@@ -1044,14 +1076,14 @@ export default function ExamDashboard() {
                <Button 
                  size="lg" 
                  onClick={() => examStage === 'MCQ' ? setShowStageTransitionModal(true) : setShowFinalSubmitModal(true)} 
-                 disabled={isSubmitting || (examStage === 'CODING' && (timeLeft > (settings?.examDuration * 30)))} 
+                 disabled={isSubmitting || (examStage === 'CODING' && (timeLeft > CODING_MIN_TIME_SECONDS))}
                  className={`${examStage === 'MCQ' ? 'bg-primary shadow-primary/20' : 'bg-emerald-500 shadow-emerald-500/20'} text-white font-semibold px-10 h-12 shadow-lg active:scale-95 transition-all disabled:opacity-50 disabled:grayscale`}
                >
                  {isSubmitting ? "Encrypting Matrix..." : examStage === 'MCQ' ? "Finish & Proceed to Coding" : "Submit Final Assessment"}
                </Button>
-               {examStage === 'CODING' && timeLeft > (settings?.examDuration * 30) && (
+               {examStage === 'CODING' && timeLeft > CODING_MIN_TIME_SECONDS && (
                   <span className="text-[10px] font-bold text-destructive/70 uppercase tracking-widest animate-pulse">
-                     Final submission unlocks in {formatTime(timeLeft - (settings?.examDuration * 30))}
+                     Final submission unlocks in {formatTime(timeLeft - CODING_MIN_TIME_SECONDS)}
                   </span>
                )}
              </div>

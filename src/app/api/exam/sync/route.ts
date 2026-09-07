@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
+import { sweepIfExpired } from "@/lib/examTiming";
 
 export async function POST(req: Request) {
   try {
@@ -8,6 +9,22 @@ export async function POST(req: Request) {
 
     if (!sessionId || !candidateId || !incomingResponses) {
       return NextResponse.json({ error: "Invalid sync ping structure" }, { status: 400 });
+    }
+
+    // Lazy-sweep safety net: a backgrounded tab's client-side timer can be
+    // throttled by the browser and miss its own deadline, but this 60s
+    // heartbeat still arrives roughly on schedule. If the session is
+    // already past its deadline, finalize it here instead of blindly
+    // accepting a stale sync write -- the client's own timer will
+    // independently reach 0 next time the tab is visible and call submit,
+    // which then hits finalizeSession's idempotent alreadyFinalized path.
+    const { data: sessionForSweep } = await supabase
+      .from("exam_sessions").select("*").eq("id", sessionId).maybeSingle();
+    if (sessionForSweep?.status === "IN_PROGRESS") {
+      const { swept } = await sweepIfExpired(sessionForSweep);
+      if (swept) {
+        return NextResponse.json({ success: true, expired: true, timestamp: Date.now() }, { status: 200 });
+      }
     }
 
     // Ping the lightweight update -- scoped to IN_PROGRESS so a sync ping

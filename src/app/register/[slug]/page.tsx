@@ -15,12 +15,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { emailSchema, rollNumberSchema } from "@/lib/validators";
 
 const formSchema = z.object({
   fullName: z.string().min(2, "Name must be at least 2 characters."),
-  email: z.string().email("Please enter a valid email address."),
+  email: emailSchema,
   phone: z.string().min(10, "Please enter a valid phone number."),
-  rollNumber: z.string().min(4, "Roll number must be at least 4 characters."),
+  rollNumber: rollNumberSchema,
   resume: z.any().optional(), // Mock file upload
 });
 

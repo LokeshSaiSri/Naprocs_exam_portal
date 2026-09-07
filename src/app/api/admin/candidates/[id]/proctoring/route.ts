@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase } from "@/lib/caseConvert";
+import { purgeProctoringForCandidate } from "@/lib/proctoringPurge";
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -44,23 +45,8 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { id: candidateId } = await context.params;
-
-    const { data: events, error: lookupError } = await supabase
-      .from("proctoring_events")
-      .select("snapshot_path")
-      .eq("candidate_id", candidateId);
-    if (lookupError) throw lookupError;
-
-    const paths = (events || []).map((e) => e.snapshot_path).filter(Boolean) as string[];
-    if (paths.length > 0) {
-      const { error: storageError } = await supabase.storage.from("proctoring-snapshots").remove(paths);
-      if (storageError) throw storageError;
-    }
-
-    const { error: deleteError } = await supabase.from("proctoring_events").delete().eq("candidate_id", candidateId);
-    if (deleteError) throw deleteError;
-
-    return NextResponse.json({ success: true, purged: paths.length }, { status: 200 });
+    const { purged } = await purgeProctoringForCandidate(candidateId);
+    return NextResponse.json({ success: true, purged }, { status: 200 });
   } catch (error: any) {
     console.error("Proctoring Purge Failure:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

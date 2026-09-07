@@ -448,13 +448,11 @@ export default function DrivesManagement() {
                            <div className="absolute inset-0 bg-primary/10 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
                         </Button>
                      </Link>
-                     {drive.webcamProctoringEnabled && (
-                        <Link href={`/admin/proctoring?driveId=${drive._id}`} className="flex-1">
-                           <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2">
-                              <Video className="h-3.5 w-3.5" /> Proctoring
-                           </Button>
-                        </Link>
-                     )}
+                     <Link href={`/admin/control-center?driveId=${drive._id}`} className="flex-1">
+                        <Button variant="outline" className="w-full h-10 border-border/60 hover:bg-muted/50 gap-2">
+                           <Video className="h-3.5 w-3.5" /> Live Monitoring
+                        </Button>
+                     </Link>
                      <Link href={`/admin/leaderboard?driveId=${drive._id}`} className="flex-1">
                         <Button className="w-full h-10 gap-2 font-semibold shadow-lg shadow-primary/20 bg-primary">
                            Results <ArrowRight className="h-3.5 w-3.5" />

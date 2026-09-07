@@ -2,22 +2,36 @@ import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import crypto from "crypto";
 import { formatToIST } from "@/lib/time";
+import { sweepIfExpired } from "@/lib/examTiming";
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { email, accessPin } = body;
+    // Accepts either the candidate's email or their college_roll_number in
+    // one field -- auto-detected by "@", mirroring loginIdentifierSchema in
+    // src/lib/validators.ts. `email` is still accepted for any older client
+    // that hasn't picked up the identifier field yet.
+    const identifier = body.identifier ?? body.email;
+    const { accessPin } = body;
 
-    if (!email || !accessPin) {
-      return NextResponse.json({ error: "Email and Access PIN are required" }, { status: 400 });
+    if (!identifier || !accessPin) {
+      return NextResponse.json({ error: "Email/Roll Number and Access PIN are required" }, { status: 400 });
     }
+
+    const rawIdentifier = String(identifier).trim();
+    const isEmailIdentifier = rawIdentifier.includes("@");
+    const lookupField = isEmailIdentifier ? "email" : "college_roll_number";
+    // Matches the normalization applied at registration time (lowercase
+    // email, uppercase roll number) and the backfill in
+    // supabase/migrations/008_normalize_candidate_identifiers.sql.
+    const lookupValue = isEmailIdentifier ? rawIdentifier.toLowerCase() : rawIdentifier.toUpperCase();
 
     // 1. Find Candidate First to get their Drive Association
     const { data: candidate, error: candidateError } = await supabase
       .from("candidates")
       .select("*")
-      .eq("email", email)
-      .eq("access_pin", accessPin)
+      .eq(lookupField, lookupValue)
+      .eq("access_pin", String(accessPin).trim())
       .maybeSingle();
     if (candidateError) throw candidateError;
     if (!candidate) {
@@ -62,6 +76,35 @@ export async function POST(req: Request) {
       }, { status: 403 });
     }
 
+    // 2a. Lazy-sweep: if this candidate has a session the server considers
+    // abandoned (past its deadline, never submitted -- browser closed
+    // mid-exam), finalize it now instead of letting them land back on a
+    // dead dashboard. This is what actually surfaces abandoned sessions to
+    // admins as COMPLETED/ABANDONED_TIMEOUT instead of stuck IN_PROGRESS
+    // forever -- see src/lib/examTiming.ts.
+    const { data: activeSession } = await supabase
+      .from("exam_sessions")
+      .select("*")
+      .eq("candidate_id", candidate.id)
+      .eq("status", "IN_PROGRESS")
+      .maybeSingle();
+    if (activeSession) {
+      const { swept } = await sweepIfExpired(activeSession);
+      if (swept) {
+        // Reuses the exact same "Assessment Received" dead-end card the
+        // frontend already shows for a genuinely-completed exam (matched by
+        // this NOT containing "opens on"/"scheduled" -- see exam/page.tsx's
+        // onSubmit) -- accurate messaging either way: this candidate's
+        // attempt is over and finalized, whether by their own submit or by
+        // the server's abandoned-session sweep.
+        return NextResponse.json({
+          error: "Your previous assessment session has expired due to inactivity or the time limit. Please contact your administrator.",
+          name: candidate.name,
+          collegeRollNumber: candidate.college_roll_number
+        }, { status: 403 });
+      }
+    }
+
     // 3. Multi-Device Security Layer
     const SESSION_EXPIRY_SECONDS = 120; // 2 minutes
 
@@ -91,6 +134,7 @@ export async function POST(req: Request) {
         success: true,
         candidateId: candidate.id,
         name: candidate.name,
+        email: candidate.email,
         collegeRollNumber: candidate.college_roll_number,
         token,
         webcamProctoringEnabled: drive.webcam_proctoring_enabled ?? false,

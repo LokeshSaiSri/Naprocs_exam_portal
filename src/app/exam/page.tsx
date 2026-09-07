@@ -16,9 +16,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { useExamStore } from "@/store/examStore";
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { PROCTORING_WASM_BASE_URL, PROCTORING_MODEL_ASSET_URL } from "@/hooks/useProctoringCapture";
+import { loginIdentifierSchema } from "@/lib/validators";
 
 const loginSchema = z.object({
-  email: z.string().email("Please enter a valid email."),
+  identifier: loginIdentifierSchema,
   pin: z.string().length(6, "PIN must be exactly 6 digits."),
 });
 
@@ -174,7 +175,7 @@ export default function ExamLoginPage() {
 
   const form = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: "", pin: "" },
+    defaultValues: { identifier: "", pin: "" },
   });
 
   const onSubmit = async (values: z.infer<typeof loginSchema>) => {
@@ -185,7 +186,7 @@ export default function ExamLoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: values.email,
+          identifier: values.identifier,
           accessPin: values.pin,
         }),
       });
@@ -193,11 +194,13 @@ export default function ExamLoginPage() {
       const data = await res.json();
 
       if (res.ok) {
-        // Update store with actual candidate data
+        // Update store with actual candidate data. Use the canonical email
+        // the server returns (data.email) rather than the raw typed value --
+        // the candidate may have logged in with their roll number instead.
         login({
           id: data.candidateId,
           name: data.name,
-          email: values.email,
+          email: data.email ?? values.identifier,
           pin: values.pin,
           collegeRollNumber: data.collegeRollNumber
         });
@@ -386,13 +389,13 @@ export default function ExamLoginPage() {
                      )}
                      
                      <div className="space-y-2">
-                       <Label className="text-foreground/70">Candidate Email</Label>
-                       <Input 
-                         type="email" 
-                         placeholder="Enter verified email" 
+                       <Label className="text-foreground/70">Email or Roll Number</Label>
+                       <Input
+                         type="text"
+                         placeholder="Enter verified email or roll number"
                          className="bg-input/50 h-12"
                          disabled={isLoggingIn}
-                         {...form.register("email")}
+                         {...form.register("identifier")}
                        />
                      </div>
                      <div className="space-y-2">

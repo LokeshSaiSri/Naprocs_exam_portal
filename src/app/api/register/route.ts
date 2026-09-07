@@ -40,9 +40,14 @@ export async function POST(req: Request) {
       }, { status: 403 });
     }
     const name = formData.get("name") as string;
-    const email = formData.get("email") as string;
+    // Normalize case/whitespace at write time so every row is canonical from
+    // here on -- this is what makes case-insensitive login (email OR roll
+    // number) reliable without special-casing the lookup. See
+    // supabase/migrations/008_normalize_candidate_identifiers.sql for the
+    // matching backfill of rows that predate this.
+    const email = ((formData.get("email") as string) || "").trim().toLowerCase();
     const phone = formData.get("phone") as string;
-    const collegeRollNumber = formData.get("collegeRollNumber") as string;
+    const collegeRollNumber = ((formData.get("collegeRollNumber") as string) || "").trim().toUpperCase();
     const resumeFile = formData.get("resume") as File;
 
     if (!name || !email || !phone || !collegeRollNumber || !resumeFile) {

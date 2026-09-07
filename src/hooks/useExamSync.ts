@@ -8,6 +8,11 @@ export function useExamSync(candidateId: string, sessionId: string) {
   const [examStage, setExamStage] = useState<'MCQ' | 'CODING'>('MCQ');
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  // Server-authoritative deadline for this candidate's session (start_time +
+  // drive duration, capped by the drive's exam_end) -- computed once,
+  // server-side, and never recomputed on the client. See src/lib/examTiming.ts.
+  const [deadline, setDeadline] = useState<string | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   const responsesRef = useRef(responses);
 
@@ -36,6 +41,12 @@ export function useExamSync(candidateId: string, sessionId: string) {
            if (data.sessionId) setInternalSessionId(data.sessionId);
            if (data.currentStage) setExamStage(data.currentStage);
            if (data.existingResponses) setResponses(data.existingResponses);
+           if (data.deadline) setDeadline(data.deadline);
+        } else if (data.expired) {
+           // Lazy-sweep on the server found this session already past its
+           // deadline (abandoned/expired) -- surface it so the dashboard can
+           // show a clear "session expired" state instead of a blank/broken UI.
+           setSessionExpired(true);
         }
       } catch (e) {
         if (!cancelled) console.error("Hydration Error:", e);
@@ -61,7 +72,12 @@ export function useExamSync(candidateId: string, sessionId: string) {
         })
       });
       if (res.ok) {
-        setLastSyncTime(new Date());
+        const data = await res.json().catch(() => null);
+        if (data?.expired) {
+          setSessionExpired(true);
+        } else {
+          setLastSyncTime(new Date());
+        }
       }
     } catch (error) {
        console.error("Silent Sync Failure:", error);
@@ -95,8 +111,10 @@ export function useExamSync(candidateId: string, sessionId: string) {
     setExamStage,
     updateResponse, 
     manualSync, 
-    isSyncing, 
+    isSyncing,
     lastSyncTime,
-    recoveredSessionId: internalSessionId 
+    recoveredSessionId: internalSessionId,
+    deadline,
+    sessionExpired
   };
 }
