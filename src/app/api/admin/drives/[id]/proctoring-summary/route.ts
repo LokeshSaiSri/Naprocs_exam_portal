@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase } from "@/lib/caseConvert";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id: driveId } = await context.params;
 
     const { data: candidates, error: candidatesError } = await supabase

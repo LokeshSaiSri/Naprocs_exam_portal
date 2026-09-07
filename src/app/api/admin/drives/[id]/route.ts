@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase, toSnakeCase } from "@/lib/caseConvert";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id } = await params;
     const { data: drive, error } = await supabase.from("drives").select("*").eq("id", id).maybeSingle();
     if (error) throw error;
@@ -16,6 +20,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id } = await params;
     const body = await req.json();
     // NOTE: original route never checked for a not-found id here (findByIdAndUpdate
@@ -35,6 +42,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     // THE "PURGE" FEATURE: Delete Drive, associated Candidates, and associated Questions.
     // Sequential, non-transactional -- matches original Mongoose behavior exactly
     // (Rulebook rule #10: not changing this without explicit sign-off).

@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
+import { requireAdmin } from "@/lib/adminAuth";
 
 const VALID_STAGES = ['EXAM_PENDING', 'EXAM_COMPLETED', 'TECH_ROUND', 'HR_ROUND', 'SELECTED', 'REJECTED'];
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const params = await context.params;
     const { id } = params;
     const { stage } = await req.json();

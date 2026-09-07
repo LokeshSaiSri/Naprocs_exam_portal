@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase, toSnakeCase } from "@/lib/caseConvert";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function GET() {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { data: drives, error } = await supabase
       .from("drives")
       .select("*")
@@ -18,6 +22,9 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const body = await req.json();
 
     // Generate slug if not provided

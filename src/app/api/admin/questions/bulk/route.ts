@@ -3,9 +3,13 @@ import supabase from '@/lib/supabase';
 import { toSnakeCase } from '@/lib/caseConvert';
 import { isValidUUID } from '@/lib/validators';
 import { withDefaults } from '@/lib/dbDefaults';
+import { requireAdmin } from '@/lib/adminAuth';
 
 export async function POST(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { questions } = await req.json();
 
     if (!Array.isArray(questions) || questions.length === 0) {
@@ -79,6 +83,9 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { ids } = await req.json();
 
     if (!Array.isArray(ids) || ids.length === 0) {

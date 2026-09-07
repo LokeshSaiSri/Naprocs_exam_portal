@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase } from "@/lib/caseConvert";
+import { requireAdmin } from "@/lib/adminAuth";
 
 // Backs the unified admin/control-center "Live Monitoring" page. Replaces
 // having to visit two separate pages (Control Center for activity/stage/
@@ -19,6 +20,9 @@ const ACTIVE_WINDOW_MS = 120_000; // matches the existing convention (control-ce
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id: driveId } = await context.params;
 
     const { data: candidates, error: candidatesError } = await supabase

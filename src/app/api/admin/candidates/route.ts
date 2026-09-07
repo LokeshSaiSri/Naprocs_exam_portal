@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase } from "@/lib/caseConvert";
+import { requireAdmin } from "@/lib/adminAuth";
 
 // Deliberately excludes access_pin -- matches old `.select("-accessPin")`.
 const CANDIDATE_COLUMNS =
@@ -8,6 +9,9 @@ const CANDIDATE_COLUMNS =
 
 export async function GET(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { searchParams } = new URL(req.url);
     const stageQuery = searchParams.get("stage");
     const driveId = searchParams.get("driveId");
@@ -60,6 +64,9 @@ const VALID_STAGES = ['EXAM_PENDING', 'EXAM_COMPLETED', 'TECH_ROUND', 'HR_ROUND'
 
 export async function PATCH(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { candidateIds, stage } = await req.json();
 
     if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0 || !stage) {

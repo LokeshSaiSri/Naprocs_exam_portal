@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server';
 import supabase from '@/lib/supabase';
 import { purgeProctoringForCandidate } from '@/lib/proctoringPurge';
+import { requireAdmin } from '@/lib/adminAuth';
 
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const params = await context.params;
     const { id } = params;
 

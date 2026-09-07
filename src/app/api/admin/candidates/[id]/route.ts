@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { purgeProctoringForCandidate } from "@/lib/proctoringPurge";
+import { requireAdmin } from "@/lib/adminAuth";
 
 // Deletes one candidate and everything that belongs to them: proctoring
 // evidence, exam sessions, their resume file, and finally the candidate row
@@ -10,6 +11,9 @@ import { purgeProctoringForCandidate } from "@/lib/proctoringPurge";
 // fails partway through.
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id: candidateId } = await context.params;
 
     const { data: candidate, error: lookupError } = await supabase

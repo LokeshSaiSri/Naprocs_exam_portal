@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const params = await context.params;
     const { id } = params;
     const body = await req.json();

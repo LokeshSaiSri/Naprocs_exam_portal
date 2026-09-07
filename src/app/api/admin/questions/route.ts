@@ -2,9 +2,13 @@ import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase, toSnakeCase } from "@/lib/caseConvert";
 import { withDefaults } from "@/lib/dbDefaults";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function GET(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { searchParams } = new URL(req.url);
     const driveId = searchParams.get("driveId");
 
@@ -23,6 +27,9 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const body = await req.json();
 
     // Support either single object or array of objects

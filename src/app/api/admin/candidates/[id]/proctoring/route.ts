@@ -2,9 +2,13 @@ import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase } from "@/lib/caseConvert";
 import { purgeProctoringForCandidate } from "@/lib/proctoringPurge";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id: candidateId } = await context.params;
 
     const { data: events, error } = await supabase
@@ -44,6 +48,9 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id: candidateId } = await context.params;
     const { purged } = await purgeProctoringForCandidate(candidateId);
     return NextResponse.json({ success: true, purged }, { status: 200 });

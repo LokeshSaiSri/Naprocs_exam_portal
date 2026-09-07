@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import supabase from "@/lib/supabase";
 import { toCamelCase, toSnakeCase } from "@/lib/caseConvert";
+import { requireAdmin } from "@/lib/adminAuth";
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id } = await params;
     const body = await req.json();
 
@@ -34,6 +38,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { id } = await params;
 
     const { data: deleted, error } = await supabase

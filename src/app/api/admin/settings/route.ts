@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server';
 import supabase from '@/lib/supabase';
 import { toCamelCase, toSnakeCase } from '@/lib/caseConvert';
+import { requireAdmin } from '@/lib/adminAuth';
 
 export async function GET() {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const { data: existing, error: fetchError } = await supabase
       .from('settings')
       .select('*')
@@ -33,6 +37,9 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const unauthorized = await requireAdmin();
+    if (unauthorized) return unauthorized;
+
     const body = await req.json();
     const payload = toSnakeCase(body);
 
